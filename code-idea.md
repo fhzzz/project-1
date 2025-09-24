@@ -68,7 +68,8 @@ def get_score_info
 - def get_uncertainty_Q
     - 根据上下限返回
     - para: 
-    - return: uncertainty_pair
+    - return: uncertainty_pair [pair_num, pair_num]
+
 
 - def llm_labelling
     - input: uncertainty_pair
@@ -76,6 +77,8 @@ def get_score_info
 
 - def update_unlabel_R
     - 更新取值为-1的部分
+    - 可以计算损失，这里的损失是semi还是只unlabel？
+    - 
 
 - def train
     - 完成主训练逻辑
@@ -91,3 +94,29 @@ def get_score_info
 - 考虑三元组对比损失，再次利用LLM之前的结果，挖掘难样本例子，三元组损失使用相似度度量，并使用置信度加权，避免训练不稳定
 - 联合训练，一共有三个损失函数，标签监督，无标签自监督，三元组损失
 
+### 文字思路
+
+1. 得到feats, 计算 sim_score, 同时得到数据分布：均值和方差
+2. 根据数据分布得到区间上下界
+3. 根据上下界得到矩阵R, 
+    1) 标签数据, 根据sim_score和R就可以算出来一个损失
+    2) 无标签数据, -1, 0, 1 -> 得到 uncertain_pair
+4. 根据LLM得到伪标签
+5. 根据伪标签能天然得到正样本对
+
+
+### 缓存区
+```
+# 1. get feats
+# train_semi_dataloader是顺序采样器
+feats, _ = self.eval(args, dataloader=train_semi_dataloader, get_feats=True)
+
+# 2. compute sim_score
+sim_score = self.get_sim_score(feats)
+
+# 3. get_R
+
+
+
+
+```

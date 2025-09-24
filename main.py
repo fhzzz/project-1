@@ -3,10 +3,12 @@ from config import *
 from model import *
 from losses import *
 
+
 import torch
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from typeing import List, Tuple, Dict
+import torch.nn.functional as F
 import logging
 from tqdm import tqdm
 
@@ -103,6 +105,15 @@ class MainManager:
 
                 with torch.set_grad_enabled(True):
                     
+
+    def get_sim_score(self, feats):
+        feats = F.normalize(feats, p=2, dim=1)
+        sim = torch.matmul(feats, feats.t())
+        return sim
+
+    def get_score_info(self, sim):
+
+
 
 
 
