@@ -104,20 +104,28 @@ class MainManager:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
 
                 with torch.set_grad_enabled(True):
+                    pass
                     
 
     def get_sim_score(self, feats):
+        # feats: []
+        # sim: [num_samples, num_samples]
         feats = F.normalize(feats, p=2, dim=1)
         sim = torch.matmul(feats, feats.t())
         return sim
 
-    def get_score_info(self, sim):
+    def get_label_R(self, labels):
+        # labels: [bsz,] or [num+label_samples]??
+        label_R = labels.unsqueeze(0) == labels.unsequeeze(1)
+        label_R = label_R.float()
+        return label_R
 
+    def get_unlabel_R(self, sim_score, l, u):
+        R = torch.full_like(sim_score, -1.0)
+        R[sim_score >= u] = 1.0  # 高置信度相似
+        R[sim_score <= l] = 0.0  # 高置信度不相似
+        return R
 
-
-
-
-
-
+    def update_threshholds(sim_score, ):
 
 

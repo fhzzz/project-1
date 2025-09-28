@@ -107,14 +107,21 @@ def get_score_info
 
 ### 缓存区
 ```
-# 1. get feats
+# 1. get feats and labels
 # train_semi_dataloader是顺序采样器
 feats, _ = self.eval(args, dataloader=train_semi_dataloader, get_feats=True)
+
+_, labels = self.eval(args, dataloader=train_labeled_samples, get_feats=True)
 
 # 2. compute sim_score
 sim_score = self.get_sim_score(feats)
 
 # 3. get_R
+label_R = self.get_label_R(labels=labels)
+unlabel_R = self.get_unlabel_R(sim_score=sim_score, l, u)
+
+
+
 
 
 
