@@ -120,10 +120,14 @@ sim_score = self.get_sim_score(feats)
 label_R = self.get_label_R(labels=labels)
 unlabel_R = self.get_unlabel_R(sim_score=sim_score, l, u)
 
+# 4. get_uncert_pairs
 
 
+```
 
-
-
-
+### uncert_pairs
+```
+uncertain_ij = []
+for i in range(bsz):
+    for j in range()
 ```
