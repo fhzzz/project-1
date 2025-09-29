@@ -74,6 +74,7 @@ def get_score_info
 - def llm_labelling
     - input: uncertainty_pair
     - return: 0/1, 置信度得分
+    - 根据样本对索引获取样本文本
 
 - def update_unlabel_R
     - 更新取值为-1的部分
