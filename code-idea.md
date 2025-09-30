@@ -29,6 +29,10 @@
     - 对项目的必要说明
 
 ### data_process.py
+- 设定Known Class Ratio后**随机选择**：known_label_list, unk_label_list, all_ordered
+- 按照标签**分层抽样**得到：train_labeled_samples, train_semi_samples
+    - def label2id(): 按照all_ordered的顺序映射，而all_ordered又按照先有标签后无标签的顺序，根据这个前提，可以通过列表长度得到标签样本和无标签样本
+    - 需要分层抽样，所以
 - train_labeled_samples
 - train_semi_samples
 
@@ -60,7 +64,7 @@
     - 小于下限：取0
     - 区间中部：取值-1
     
-def get_score_info
+- def get_score_info
     - 得到相似度分数的数据分布，以此更新区间上下限[l(\lambda), u(\lambda)]
     - para: sim_score
     - return 均值或者方差？
@@ -103,6 +107,13 @@ def get_score_info
     1) 标签数据, 根据sim_score和R就可以算出来一个损失
     2) 无标签数据, -1, 0, 1 -> 得到 uncertain_pair
 4. 根据LLM得到伪标签
+    - 得到样本对索引 [(i, j), ...]
+    - 根据索引得到文本对 [(text_i, text_j), ...]
+    - 调用LLM，写好提示词，让它输出结果，
+    - 需要在这个方法里把前面的变量都真正得到。
+    - 
+    - 
+
 5. 根据伪标签能天然得到正样本对
 
 
@@ -132,3 +143,8 @@ uncertain_ij = []
 for i in range(bsz):
     for j in range()
 ```
+
+### AI 
+- 我改进了附件PDF论文，其余附件包含了我的改进思路(a-pairwise-idea.md)、代码思路(code-idea.ma)、数据处理脚本(data_process.py)、主训练脚本(main.py,未完成)。现在我已经能得到text_pairs，但是我不知道应该如何调用LLM完成我的改进想法，我也没有调用LLM的经验，我希望你能在我代码的基础上实施完善。请你帮我写完llm_labeling方法，你可以给出prompt模板。注意，你需要仔细检查你的代码逻辑。
+
+- 我编写的R矩阵这些我不知道应该按照batch实现，还是按照全部样本实现？如果是batch内的R矩阵，那么需要考虑索引的问题，应该使用全局索引。因为需要从R矩阵得到uncert_pair,需要对其使用LLM

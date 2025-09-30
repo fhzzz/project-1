@@ -1,9 +1,10 @@
 from utils import *
+from config import *
 
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 from datasets import load_dataset, ClassLabel, concatenate_datasets
 from torch.utils.data import DataLoader, SequentialSampler, Dataset
-import os
+import os, logging, copy
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -11,29 +12,30 @@ from sklearn.metrics import euclidean_distances, pairwise_distances_argmin_min
 
 class PrepareData:
 
-    def __init__(self, args):
+    def __init__(self, args, logger_name="Data Processing"):
 
         set_seed(args.seed)
 
         self.data_dir = os.path.join(args.data_dir, args.dataset)
-        print(f"data_dir:{self.data_dir}")
+        self.logger.info(f"data_dir:{self.data_dir}")
 
         max_seq_lengths = {'clinc':30, 'stackoverflow':45,'banking':55}
         args.max_seq_length = max_seq_lengths[args.dataset]
         self.max_seq_length = args.max_seq_length
-        print(f"max_seq_length: {self.max_seq_length}")
+        self.logger.info(f"max_seq_length: {self.max_seq_length}")
 
         self.tokenizer = AutoTokenizer.from_pretrained(args.model)
         self.tokenized_datasets = self.get_tokenized(self.data_dir)        
         self.all_ordered, self.known_cls_list, self.unk_cls_list = self.get_labels(args, self.tokenized_datasets["train"])
         self.tokenized_datasets = self.label2id(self.tokenized_datasets, list=self.all_ordered)
-        print(f"处理完成后的tokenized_datasets: {self.tokenized_datasets}")
+        self.logger.info(f"处理完成后的tokenized_datasets: {self.tokenized_datasets}")
 
         self.train_labeled_samples, self.train_semi_samples, self.eval_known_samples = self.get_samples(self.tokenized_datasets, args)
         self.test_samples = self.tokenized_datasets["test"]
-        print(f"训练集有标签样本数量：{len(self.train_labeled_samples)}")
-        print(f"训练集半监督样本数量：{len(self.train_semi_samples)}")
-        print(f"测试集样本数量: {len(self.test_samples)}")
+
+        self.logger.info(f"训练集有标签样本数量：{len(self.train_labeled_samples)}")
+        self.logger.info(f"训练集半监督样本数量：{len(self.train_semi_samples)}")
+        self.logger.info(f"测试集样本数量: {len(self.test_samples)}")
 
         # DataLoader: 预训练阶段
         self.train_labeled_dataloader = self.get_dataloader(self.train_labeled_samples, args, mode=None)  # shuffle=True
@@ -57,8 +59,8 @@ class PrepareData:
         for key, value in batch.items():
             first_sample[key] = value[0]  # 取每个张量的第一个元素
 
-        print("第一个标签样本的完整数据:")
-        print(first_sample)
+        self.logger.info("第一个标签样本的完整数据:")
+        self.logger.info(first_sample)
 
 
     def get_tokenized(self, data_dir):
@@ -72,6 +74,11 @@ class PrepareData:
         print(raw_datasets)
         print(raw_datasets["train"][0])
 
+        self.index_to_text = {
+            split: {i: example['text'] for i, example in enumerate(raw_datasets[split])} \
+                for split in ["train", "validation", "test"]
+        }
+        
         def tokenized_function(example):
             return self.tokenizer(
                 example["text"],
@@ -87,7 +94,7 @@ class PrepareData:
         return tokenized_datasets
     
     def get_labels(self, args, dataset):
-
+        # 此时label是文本，未经过映射
         all_cls_list = dataset.unique("label")
         n_known_cls = round(len(all_cls_list) * args.known_cls_ratio)
         known_cls_list = np.random.choice(all_cls_list, n_known_cls, replace=False)
@@ -144,3 +151,23 @@ class PrepareData:
                           collate_fn=mlm_collator if mode == 'mlm' else None)
 
 
+if __name__ == '__main__':
+
+    args = init_model()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    if not os.path.exists(args.output_dir):
+        raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
+    
+    log_path = os.path.join(args.output_dir, "data_process.log")
+
+    logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%m/%d %H:%M:%S",
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler(log_path),
+        logging.StreamHandler()   # 控制台
+    ]
+    )
+    data_processer = PrepareData(args=args, logger_name="Data Processing")

@@ -14,6 +14,9 @@ import torch.nn.functional as F
 import logging
 from tqdm import tqdm, trange
 
+from openai import OpenAI
+import tiktoken
+
 
 class MainManager:
 
@@ -27,7 +30,7 @@ class MainManager:
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.train_semi_dataloader = data_processor.train_semi_dataloader
-
+        self.index_to_text = data_processor.index_to_text
         steps = len(self.train_labeled_dataloader) * args.num_train_epochs
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
         
@@ -111,7 +114,7 @@ class MainManager:
                     
 
     def get_sim_score(self, feats):
-        # feats: []
+        # feats: [num_samples, feat_dim]
         # sim: [num_samples, num_samples]
         feats = F.normalize(feats, p=2, dim=1)
         sim = torch.matmul(feats, feats.t())
@@ -143,8 +146,8 @@ class MainManager:
         global_R[other_mask & (sim <= l)] = torch.tensor(0.0)
         return global_R
     
-    def get_uncert_pair(self, global_R):
-        # 3) get uncertainty pair
+    def get_uncert_pairs(self, global_R):
+        # get uncertainty pair
         # 使用顺序采样器对所有样本操作，这里使用的是全局索引
         uncert_mask = (global_R == -1)
         # 只保留下三角（去重+去掉对角线）
@@ -154,27 +157,48 @@ class MainManager:
         row, col = torch.where(mask)
 
         # List[(i, j)]
-        uncert_ij = torch.stack([row, col], dim=1).tolist()
+        indices_pairs = torch.stack([row, col], dim=1).tolist()
 
-        return uncert_ij
+        return indices_pairs
+
+    def get_text_pairs(self, indices_pairs):
+        """
+        根据索引对获取对应的文本对
+        
+        参数:
+            indices_pairs: 索引对列表 [(i, j), ...]
+            
+        返回:
+            文本对列表 [(text_i, text_j), ...]
+        """
+        text_pairs = []
+        for i, j in indices_pairs:
+            text_i = self.index_to_text["train"][i]
+            text_j = self.index_to_text["train"][j]
+            text_pairs.append((text_i, text_j))
+        return text_pairs
 
     def llm_labeling(self, args, epoch, model, l, u):
 
         # 创建结果保存文件
+        output_file = os.path.join(args.result_dir, \
+            f"llm_annotated_output_{args.seed}_{args.known_class_ratio}_{epoch}.json")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        
+        if os.path.exists(output_file):
+            self.logger.info(f'Start LLM labeling ...')
 
-        self.logger.info('Start LLM labeling ...')
+        # # 0. 先按照整体分布聚类
+        # feats, y_true = self.eval(args, dataloader=self.train_semi_dataloader, get_feats=True)
+        # km = KMeans(n_clusters=self.num_classes).fit(feats)
+        # cluster_centroids, y_pred = km.cluster_centers_, km.labels_
+        # cluster_centroids, y_pred = self.alignment(self.centroids, cluster_centroids, y_pred)
+        # self.centroids = cluster_centroids
 
-        # 0. 先按照整体分布聚类
-        feats, y_true = self.eval(args, dataloader=self.train_semi_dataloader, get_feats=True)
-        km = KMeans(n_clusters=self.num_classes).fit(feats)
-        cluster_centroids, y_pred = km.cluster_centers_, km.labels_
-        cluster_centroids, y_pred = self.alignment(self.centroids, cluster_centroids, y_pred)
-        self.centroids = cluster_centroids
-
-        # 应用匈牙利算法将预测结果映射到真实标签
-        # y_pred_map: 每个具体样本预测标签对应映射后的标签，
-        # cluster_map: 每个聚类中心对应映射后的标签
-        y_pred_map, cluster_map, cluster_map_opp = self.get_hungray_aligment(y_pred, y_true)
+        # # 应用匈牙利算法将预测结果映射到真实标签
+        # # y_pred_map: 每个具体样本预测标签对应映射后的标签，
+        # # cluster_map: 每个聚类中心对应映射后的标签
+        # y_pred_map, cluster_map, cluster_map_opp = self.get_hungray_aligment(y_pred, y_true)
 
         # 1. get feats and labels
         # train_semi_dataloader是顺序采样器
@@ -185,17 +209,65 @@ class MainManager:
 
         # 3. get global matrix R and uncertainty pairs
         global_R = self.get_global_R(y_true=y_true, sim=sim_score, l=l, u=u)
-        uncert_ij = self.get_uncert_pair(global_R=global_R)
+        indices_pairs = self.get_uncert_pair(global_R=global_R)
+        text_pairs = self.get_text_pairs(indices_pairs)
 
-        # LLM outputs
-        llm_generated_outputs = {
-            "pair_index": [], 
-            "llm_pred": [], 
-        }
+        self.logger.info(f"[LLM] 不确定性样本对数量 = {len(text_pairs)}")
 
-        price_usage = 0
-        for _, (i, j) in tqdm(enumerate()):
-            pass
+        # llm prompt
+        SYS_PROMPT = (
+            "You are a semantic equivalence judge. "
+            "Given two sentences, determine whether they express the same meaning / intent."
+        )
+        USER_TEMPLATE = (
+            "Sentence A: {sent_A}\n"
+            "Sentence B: {sent_B}\n"
+            "Do they express the same meaning? Please answer only \"Yes\" or \"No\" and then give a confidence score "
+            "between 0.0 and 1.0 (e.g., \"Yes 0.92\"). Avoid any other words."
+        )
+
+        # 批量调用 + 容错
+        llm_generated_outputs = {"pair_index": [], "llm_pred": [], "conf": []}
+        for idx, (t1, t2) in tqdm(enumerate(text_pairs), total=len(text_pairs), desc="LLM"):
+            prompt = USER_TEMPLATE.format(sent_A=t1, sent_B=t2)
+            messages = [{"role": "system", "content": SYS_PROMPT}, 
+            {"role": "user", "content": prompt}]
+            tokens = ENC.encode(SYS_PROMPT + prompt)
+
+            for attempt in range(args.max_retry):
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name, 
+                        messages=messages, 
+                        temperature=temperature, 
+                        timeout=30, 
+                    )
+
+                    raw: str = response.choices[0].message.content.strip()
+                    parts = raw.split()
+                    if len(parts) != 2:
+                        raise ValueError("格式不对")
+                    yn, conf = parts[0].lower(), float(parts[1])
+                    if len(parts) != 2:
+                        raise ValueError("解析失败")
+                    pred = 1 if yn == "yes" else 0
+                    break
+                except Exception as e:
+                    self.logger,Warning(f"[LLM] 第{attempt+1}次重试失败：{e}")
+                    time.sleep(random.uniform(1, 3))
+                    pred, conf = -1, 0.0
+            else:
+                self.logger.error(f"[LLM] 最终失败，跳过该对")
+                pred, conf = -1, 0.0
+            
+            i, j = indices_pairs[idx]
+            llm_generated_outputs["pair_index"].append([i, j])
+            llm_generated_outputs["llm_pred"].append(pred)
+            llm_generated_outputs["conf"].append(conf)
+        
+        self.logger.info(f"[LLM] 标注完成，已写入{output_file}")
+        return llm_generated_outputs
+
 
 
 
