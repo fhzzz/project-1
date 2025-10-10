@@ -36,13 +36,18 @@ def init_model():
     parser.add_argument("--wait_patient", default=20, type=int, help="Early stop patience")
     parser.add_argument("--warmup_proportion", default=0.1, type=float, help="")
 
-    parser.add_argument("--update_per_epochs", default=3, type=int, help="")
-    parser.add_argument("--max_retry", default=5, type=int, help="")
+
     # # UncertaintySector
     # parser.add_argument("--rho", default=1.0, type=float, help="")
     # parser.add_argument("--K", default=3, type=int, help="")
     # parser.add_argument("--alpha", default=1.0, type=float, help="")
     # parser.add_argument("--temperature", default=0.07, type=float, help="")
+
+    # 调用LLM
+    parser.add_argument("--temperature", default=0.07, type=float, help="")
+    parser.add_argument("--model_name", default="chatgpt-3.5-turbo", type=str, help="")
+    parser.add_argument("--update_per_epochs", default=3, type=int, help="")
+    parser.add_argument("--max_retry", default=5, type=int, help="")
 
     # 其他
     parser.add_argument("--max_seq_length", type=int, help="")

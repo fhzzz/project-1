@@ -169,7 +169,7 @@ class MainManager:
             indices_pairs: 索引对列表 [(i, j), ...]
             
         返回:
-            文本对列表 [(text_i, text_j), ...]
+            text_pairs: 文本对列表 [(text_i, text_j), ...]
         """
         text_pairs = []
         for i, j in indices_pairs:
@@ -237,9 +237,9 @@ class MainManager:
             for attempt in range(args.max_retry):
                 try:
                     response = client.chat.completions.create(
-                        model=model_name, 
+                        model=args.model_name, 
                         messages=messages, 
-                        temperature=temperature, 
+                        temperature=args.temperature, 
                         timeout=30, 
                     )
 
@@ -268,17 +268,32 @@ class MainManager:
         self.logger.info(f"[LLM] 标注完成，已写入{output_file}")
         return llm_generated_outputs
 
-    def seva_llm_results(self, args, results, ):
-        filename = f"llm_labeling_results_{args.seed}_{args.known_class_ratio}.json"
-        filepath = os.path.join(args.result_dir, filename)
+    # def seva_llm_results(self, args, results, ):
+    #     filename = f"llm_labeling_results_{args.seed}_{args.known_class_ratio}.json"
+    #     filepath = os.path.join(args.result_dir, filename)
 
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, 'w') as f:
-            json.dump(results, f, indent=4, ensure_ascii=Flase)
+    #     os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    #     with open(filepath, 'w') as f:
+    #         json.dump(results, f, indent=4, ensure_ascii=False)
 
-        self.logger.info(f"LLM结果已保存到: {filepath}")
+    #     self.logger.info(f"LLM结果已保存到: {filepath}")
     
-    def update_R(self, ):
+    def update_R(self, global_R, llm_outputs, sim, y_true, conf_thresh):
+        N = global_R.size(0)
+        new_R = global_R.clone()
+
+        for (i, j), pred, conf in zip(
+            llm_outputs["pair_index"], 
+            llm_outputs["llm_pred"], 
+            llm_outputs["conf"]
+        ):
+            if conf >= conf_thresh and global_R[i, j] == -1:
+                new_R[i, j] = new_R[j, i] =float(pred)
+        return new_R
+
+
+
+
         
 
 
