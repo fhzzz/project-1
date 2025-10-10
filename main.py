@@ -268,6 +268,19 @@ class MainManager:
         self.logger.info(f"[LLM] 标注完成，已写入{output_file}")
         return llm_generated_outputs
 
+    def seva_llm_results(self, args, results, ):
+        filename = f"llm_labeling_results_{args.seed}_{args.known_class_ratio}.json"
+        filepath = os.path.join(args.result_dir, filename)
+
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w') as f:
+            json.dump(results, f, indent=4, ensure_ascii=Flase)
+
+        self.logger.info(f"LLM结果已保存到: {filepath}")
+    
+    def update_R(self, ):
+        
+
 
 
 
