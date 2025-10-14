@@ -100,11 +100,20 @@ class MainManager:
 
         best_eval_score = 0
         wait = 0
+        best_model = None
+
+        # # 预训练阶段（如果尚未进行）
+        # if not hasattr(self, 'pretrain_complete'):
+        #     self.logger.info("开始预训练阶段...")
+        #     self.pretrain_manager.train(args)
+        #     self.pretrain_complete = True       
 
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
+
+            # 
 
             for step, batch in enumerate(tqdm(self.train_semi_dataloader)):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
@@ -181,12 +190,16 @@ class MainManager:
     def llm_labeling(self, args, epoch, model, l, u):
 
         # 创建结果保存文件
-        output_file = os.path.join(args.result_dir, \
+        output_file = os.path.join(args.result_dir, "llm_outputs", \
             f"llm_annotated_output_{args.seed}_{args.known_class_ratio}_{epoch}.json")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         
         if os.path.exists(output_file):
-            self.logger.info(f'Start LLM labeling ...')
+            self.logger.info(f'加载缓存的LLM标注结果: {outout_file}')
+            with open(output_file, 'r') as f:
+                return json.load(f)
+        
+        self.logger.info(f'Starting LLM labeling, the number of samples is {len(text_pairs)}...')
 
         # # 0. 先按照整体分布聚类
         # feats, y_true = self.eval(args, dataloader=self.train_semi_dataloader, get_feats=True)
@@ -212,13 +225,17 @@ class MainManager:
         indices_pairs = self.get_uncert_pair(global_R=global_R)
         text_pairs = self.get_text_pairs(indices_pairs)
 
-        self.logger.info(f"[LLM] 不确定性样本对数量 = {len(text_pairs)}")
+        # self.logger.info(f"[LLM] 不确定性样本对数量 = {len(text_pairs)}")
 
         # llm prompt
+        # 初始化OpenAI客户端
+        client = OpenAI(api_key=args.openai_api_key)
+
         SYS_PROMPT = (
             "You are a semantic equivalence judge. "
             "Given two sentences, determine whether they express the same meaning / intent."
         )
+
         USER_TEMPLATE = (
             "Sentence A: {sent_A}\n"
             "Sentence B: {sent_B}\n"
@@ -227,6 +244,7 @@ class MainManager:
         )
 
         # 批量调用 + 容错
+        # results = []
         llm_generated_outputs = {"pair_index": [], "llm_pred": [], "conf": []}
         for idx, (t1, t2) in tqdm(enumerate(text_pairs), total=len(text_pairs), desc="LLM"):
             prompt = USER_TEMPLATE.format(sent_A=t1, sent_B=t2)
@@ -278,6 +296,15 @@ class MainManager:
 
     #     self.logger.info(f"LLM结果已保存到: {filepath}")
     
+    # def _parse_llm_response(self, response):
+    #     if not response or "Error" in response:
+    #         return -1, 0.0
+
+    #     try:
+    #         cleaned = response.strip().lower()
+    #         if '\n' in cleaned:
+    #             cleaned = 
+
     def update_R(self, global_R, llm_outputs, sim, y_true, conf_thresh):
         N = global_R.size(0)
         new_R = global_R.clone()
