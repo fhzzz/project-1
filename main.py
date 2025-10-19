@@ -96,7 +96,7 @@ class MainManager:
             y_true = total_labels.cpu().numpy()
             return y_true, y_pred
 
-    def train(self, args):
+    def train(self, args, u, l, eps=1e-10, conf_thresh=0.6):
 
         best_eval_score = 0
         wait = 0
@@ -113,13 +113,43 @@ class MainManager:
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
 
-            # 
+            # 1. 相似度损失
+            feats, y_true = self.eval(args, dataloader=self.train_semi_dataloader, get_feats=True)
+            sim = self.get_sim_score(feats=feats)
+            global_R = self.get_global_R(y_true=y_true, sim=sim, l=l, u=u)
+            
+            # 考虑使用LLM获取伪标签
+            if epoch % 5 == 0:
+                llm_outputs = self.llm_labeling(args, epoch, self.model, l, u)
+            global_R = self.update_R(global_R, llm_outputs, sim, y_true, conf_thresh)
+
+            # 计算相似度损失
+            pos_mask = (global_R == 1)
+            neg_mask = (global_R == 0)
+            pos_entropy = -torch.log(torch.clamp(sim, eps, 1.0)) * pos_mask
+            neg_entropy = -torch.log(torch.clamp(1 - sim, eps, 1.0)) * neg_mask
+            # 这里包含了动态阈值更改策略，但是注意，只这里的实现还不完整
+            sim_loss = pos_entropy.mean() + neg_entropy.mean() + u - l
+
+            # 2. 三元组损失
+            # update_data: 得先拿到正例和负例, 这里应返回三元组损失用的dataset
+
+            # self.tr_dl_gpt
 
             for step, batch in enumerate(tqdm(self.train_semi_dataloader)):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
+                # pos_
 
                 with torch.set_grad_enabled(True):
-                    pass
+                    seq_emb = self.model(
+                        input_ids=batch['input_ids'], 
+                        attention_mask=batch['attention_mask'], 
+                        labels=None, 
+                        mode='simple_forward')
+                    
+                    
+                    sim = self.get_sim_score(seq_emb)
+
                     
 
     def get_sim_score(self, feats):
@@ -222,7 +252,7 @@ class MainManager:
 
         # 3. get global matrix R and uncertainty pairs
         global_R = self.get_global_R(y_true=y_true, sim=sim_score, l=l, u=u)
-        indices_pairs = self.get_uncert_pair(global_R=global_R)
+        indices_pairs = self.get_uncert_pairs(global_R=global_R)
         text_pairs = self.get_text_pairs(indices_pairs)
 
         # self.logger.info(f"[LLM] 不确定性样本对数量 = {len(text_pairs)}")
@@ -317,6 +347,9 @@ class MainManager:
             if conf >= conf_thresh and global_R[i, j] == -1:
                 new_R[i, j] = new_R[j, i] =float(pred)
         return new_R
+    
+    def update_data(self, R, ):
+        
 
 
 

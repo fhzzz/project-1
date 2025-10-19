@@ -37,6 +37,15 @@ class MemoryBank:
         self.uncertainties = self.uncertainties.to(device)
         self.relation_matrix = self.relation_matrix.to(device)
 
+
+class NeighborDataset:
+
+    def __init__(self, dataset, indices, num_neighbors=None):
+        super(NeighborDataset, self).__init__()
+
+        self.dataset = dataset
+        self.indices = indices  # Nearest neighbor indices (np.array, [len(dataset), 1])
+        # 这里如果要根据LLM标注结果确定正类样本的话，
     
 
 
