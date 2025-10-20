@@ -16,9 +16,6 @@ import torch.nn.functional as F
 import logging
 from tqdm import tqdm, trange
 
-from openai import OpenAI
-import tiktoken
-
 
 class CdacManager:
 
@@ -26,9 +23,23 @@ class CdacManager:
         self.logger = logging.getLogger(logger_name)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.model = Bert(mode=args.model, ).to(self.device)
+        self.model = Bert(model=args.model, head_feat_dim=args.feat_dim).to(self.device)
+
+        # 加载PretrainBert 的 backbone 权重
+        pretrain_file = os.path.join(args.output_dir, "best_pretrain_model.pt")
+        if os.path.exists(pretrain_file):
+            pretrain_ckpt = torch.load(pretrain_file, map_location=self.device)
+            # 只拿 "backbone.xxx" 开头的键
+            backbone_dict = {k.replace("backbone.", ""): v
+                             for k, v in pretrain_ckpt.items()
+                             if k.startswith("backbone.")}
+            self.model.backbone.load_state_dict(backbone_dict, strict=True)
+            print("✅ PretrainBert backbone loaded into Bert.")
+        else:
+            print("⚠️  pretrain weight not found, train from scratch.")        
 
         data_processor = PrepareData()
+
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.train_semi_dataloader = data_processor.train_semi_dataloader
@@ -142,7 +153,7 @@ class CdacManager:
 
                     self.optimizer.zero_grad()
                     sim_loss.backward()
-                    nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    # nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
                     self.scheduler.step()
                    
@@ -155,16 +166,13 @@ class CdacManager:
 
             # 直接用测试集评估
             test_feats, test_y_true, test_y_pred = self.eval(args, dataloader=self.test_dataloader, get_feats=True)
-            test_score = round(accuracy_score(test_y_true, test_y_pred) * 100, 2)
+            eval_score = round(accuracy_score(test_y_true, test_y_pred) * 100, 2)
 
             eval_results = {
-                'Train_loss': round(loss, 6),
-                'Train_ce_loss': round(ce_loss, 6),
-                'Train_mlm_loss': round(mlm_loss, 6),
+                'Train_sim_loss': round(sim_loss, 6),
                 'Eval_score': eval_score,
                 'Best_score':best_eval_score,
                 'Wait_epoch': wait, 
-                'len(uncert_pairs)': len(indices_pairs)
             }
 
             self.logger.info("***** Epoch: %s: Eval results *****", str(epoch))
@@ -173,16 +181,16 @@ class CdacManager:
 
             # 用测试集集查看候选三元组的数量
             sim_mat = self.get_sim_score(feats=test_feats)
-            global_R = self.get_global_R(sim_mat, u, l)
+            global_R = self.get_global_R(y_true=test_y_true, sim=sim_mat, l=l, u=u)
             indices_pairs = self.get_uncert_pairs(global_R)
-            # self.logger.info(f"候选三元组对的数量为: {len(indices_pairs)}")
             self.logger.info(f"Epoch {epoch}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
             # 查看聚类指标
-            km = KMeans(n_clusters = args.num_labels).fit(feats)
+            km = KMeans(n_clusters = args.num_labels).fit(test_feats)
             y_pred = km.labels_
         
-            test_results = clustering_score(y_true, y_pred)
-            cm = confusion_matrix(y_true, y_pred)
+            # 已经用了匈牙利对齐算法
+            test_results = clustering_score(test_y_true, test_y_pred)
+            cm = confusion_matrix(test_y_true, test_y_pred)
             
             self.logger.info
             self.logger.info("***** Test: Confusion Matrix *****")
@@ -254,27 +262,6 @@ class CdacManager:
         indices_pairs = torch.stack([row, col], dim=1).tolist()
 
         return indices_pairs
-
-    def test(self, args):
-        self.logger.info('Testing cadc-km model...')
-        feats, y_true, _ = self.eval(args, dataloader=self.test_dataloader, get_feats=True)
-        km = KMeans(n_clusters = args.num_labels).fit(feats)
-        y_pred = km.labels_
-    
-        test_results = clustering_score(y_true, y_pred)
-        cm = confusion_matrix(y_true, y_pred)
-        
-        self.logger.info
-        self.logger.info("***** Test: Confusion Matrix *****")
-        self.logger.info("%s", str(cm))
-        self.logger.info("***** Test results *****")
-        
-        for key in sorted(test_results.keys()):
-            self.logger.info("  %s = %s", key, str(test_results[key]))
-
-        test_results['y_true'] = y_true
-        test_results['y_pred'] = y_pred
-        return test_results
 
 
 if __name__ == "__main__":
