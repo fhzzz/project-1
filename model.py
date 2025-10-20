@@ -50,23 +50,26 @@ class Bert(nn.Module):
             nn.Dropout(p=0.1), 
             nn.Linear(self.config.hidden_size, head_feat_dim)
         )
-
-    def forward(self, 
-                input_ids=None, 
-                attention_mask=None, 
-                labels=None, 
-                mode='feature_ext'):
         
-        outputs = self.backbone(input_ids=input_ids, 
-                                attention_mask=attention_mask, 
-                                labels=labels, 
+    def forward(self,
+                input_ids=None,
+                attention_mask=None,
+                labels=None,
+                mode='feature_ext'):
+
+        outputs = self.backbone(input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                labels=labels,
                                 output_hidden_states=True)
-        seq_emb = outputs.hidden_states[-1][:, 0]
-        seq_emb = self.dropout(seq_emb)
+
+        # 统一先取最后一层 hidden
+        last_hidden = outputs.hidden_states[-1]          # [B, L, H]
+        mask = attention_mask.unsqueeze(-1).float()      # [B, L, 1]
+        sent = (last_hidden * mask).sum(1) / (mask.sum(1) + 1e-8)  # mean-pooling
 
         if mode == 'feature_ext':
-            return seq_emb
+            return F.normalize(sent, p=2, dim=1)         
+
         elif mode == 'simple_forward':
-            seq_emb = F.normalize(self.head(seq_emb), dim=1)
-            return seq_emb
-        
+            sent = self.dropout(sent)
+            return F.normalize(self.head(sent), dim=1)   
