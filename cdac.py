@@ -32,6 +32,7 @@ class CdacManager:
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.train_semi_dataloader = data_processor.train_semi_dataloader
+        self.test_dataloader = data_processor.test_dataloader
         self.index_to_text = data_processor.index_to_text
         steps = len(self.train_labeled_dataloader) * args.num_train_epochs
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
@@ -109,7 +110,7 @@ class CdacManager:
 
         for epoch in trange(int(args.num_train_epochs), desc="CDAC"):
             self.model.train()
-            tr_loss = 0
+            tr_sim_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
 
             # 动态更新阈值
@@ -174,8 +175,8 @@ class CdacManager:
             sim_mat = self.get_sim_score(feats=test_feats)
             global_R = self.get_global_R(sim_mat, u, l)
             indices_pairs = self.get_uncert_pairs(global_R)
-            self.logger.info(f"候选三元组对的数量为: {len(indices_pairs)}")
-
+            # self.logger.info(f"候选三元组对的数量为: {len(indices_pairs)}")
+            self.logger.info(f"Epoch {epoch}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
             # 查看聚类指标
             km = KMeans(n_clusters = args.num_labels).fit(feats)
             y_pred = km.labels_
@@ -187,10 +188,6 @@ class CdacManager:
             self.logger.info("***** Test: Confusion Matrix *****")
             self.logger.info("%s", str(cm))
             self.logger.info("***** Test results *****")
-            
-            # 查看 u, l 的变化
-            test_results["upper"] = u
-            test_results["lower"] = l
 
             for key in sorted(test_results.keys()):
                 self.logger.info("  %s = %s", key, str(test_results[key]))
@@ -260,7 +257,7 @@ class CdacManager:
 
     def test(self, args):
         self.logger.info('Testing cadc-km model...')
-        feats, y_true = self.eval(args, dataloader=self.test_dataloader, get_feats=True)
+        feats, y_true, _ = self.eval(args, dataloader=self.test_dataloader, get_feats=True)
         km = KMeans(n_clusters = args.num_labels).fit(feats)
         y_pred = km.labels_
     
