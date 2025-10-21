@@ -26,7 +26,7 @@ class MainManager:
 
         self.model = Bert(mode=args.model, ).to(self.device)
 
-        data_processor = PrepareData()
+        # data_processor = PrepareData()
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.train_semi_dataloader = data_processor.train_semi_dataloader
@@ -69,7 +69,7 @@ class MainManager:
         total_feats = torch.empty((0, self.model.config.hidden_size)).to(self.device)
         total_logits = torch.empty((0, args.num_labels)).to(self.device)
 
-        for batch in tqdm(dataloader, desc="Iteration", leave=False):
+        for batch in tqdm(dataloader, desc="Evaluating", leave=False):
 
             batch = {k: v.to(self.device) for k, v in batch.items()}
             with torch.set_grad_enabled(False):
@@ -96,17 +96,40 @@ class MainManager:
             y_true = total_labels.cpu().numpy()
             return y_true, y_pred
 
+
+    def evaluation(self, args, data, save_results=True, plot_cm=True):
+        """final clustering evaluation on test set"""
+        # get features
+        test_feats, labels = self.eval(args, self.test_dataloader)
+
+        # k-means clustering
+        km = KMeans(n_clusters = self.num_labels).fit(test_feats)
+
+        y_pred = km.labels_
+        y_true = labels.cpu().numpy()
+
+        results = clustering_score(y_true, y_pred)
+        print('results', results)
+
+        # confusion matrix
+        if plot_cm:
+            ind, _ = hungray_aligment(y_true, y_pred)
+            map_ = {i[0]:i[1] for i in ind}
+            y_pred = np.array([map_[idx] for idx in y_pred])
+
+            cm = confusion_matrix(y_true,y_pred)
+            # print('confusion matrix',cm)
+            self.test_results = results
+
+        # save results
+        # if save_results:
+            # self.save_results(args)
+
     def train(self, args, u, l, eps=1e-10, conf_thresh=0.6):
 
         best_eval_score = 0
         wait = 0
-        best_model = None
-
-        # # 预训练阶段（如果尚未进行）
-        # if not hasattr(self, 'pretrain_complete'):
-        #     self.logger.info("开始预训练阶段...")
-        #     self.pretrain_manager.train(args)
-        #     self.pretrain_complete = True       
+        best_model = None  
 
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             self.model.train()
@@ -164,9 +187,6 @@ class MainManager:
         label_R = labels.unsqueeze(0) == labels.unsqueeze(1)
         label_R = label_R.float()
         return label_R
-
-    def update_threshholds(sim_score, ):
-        pass
 
 
     def get_global_R(self, y_true, sim, l, u):

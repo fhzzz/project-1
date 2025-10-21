@@ -24,7 +24,7 @@ def init_model():
 
     # 训练超参数相关
     parser.add_argument("--num_pretrain_epochs", default=100, type=int, help="")
-    parser.add_argument("--num_train_epochs", default=10, type=int, help="")
+    parser.add_argument("--num_train_epochs", default=6, type=int, help="")
 
     parser.add_argument("--pretrain_batch_size", default=16, type=int, help="")
     parser.add_argument("--train_batch_size", default=32, type=int, help="")

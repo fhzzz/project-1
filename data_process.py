@@ -31,6 +31,7 @@ class PrepareData:
         self.tokenizer = AutoTokenizer.from_pretrained(args.model)
         self.tokenized_datasets = self.get_tokenized(self.data_dir)        
         self.all_ordered, self.known_cls_list, self.unk_cls_list = self.get_labels(args, self.tokenized_datasets["train"])
+        self.logger.info(f"all labels={len(self.all_ordered)}, known labels={len(self.known_cls_list)}")
         self.tokenized_datasets = self.label2id(self.tokenized_datasets, list=self.all_ordered)
         self.logger.info(f"处理完成后的tokenized_datasets: {self.tokenized_datasets}")
 

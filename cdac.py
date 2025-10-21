@@ -93,6 +93,8 @@ class CdacManager:
 
         return total_feats, total_labels
 
+
+
     def train(self, args, eps=1e-10):
 
         wait = 0
@@ -111,8 +113,10 @@ class CdacManager:
 
             # 动态更新阈值
             eta = epoch * 0.009  # 自适应参数
-            u = max(0.5, 0.95 - eta)  # 防止u过小
-            l = min(0.9, 0.455 + eta * 0.1)  # 防止l过大            
+            # u = max(0.5, 0.95 - eta)  # 防止u过小
+            # l = min(0.9, 0.455 + eta * 0.1)  # 防止l过大  
+            u = max(0.6, 0.8 - eta)          
+            l = min(0.4, 0.2 + eta)
 
             for step, batch in enumerate(tqdm(self.train_semi_dataloader)):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
@@ -148,23 +152,21 @@ class CdacManager:
 
             sim_loss = tr_sim_loss / nb_tr_steps
 
+            self.logger.info(f"Epoch {epoch+1}: loss={sim_loss}")
             # 直接用测试集评估
             test_feats, test_y_true = self.eval(args, dataloader=self.test_dataloader)
 
-            # 用测试集集查看候选三元组的数量
+            # 查看候选三元组的数量
             sim_mat = self.get_sim_score(feats=test_feats)
-            # sim_mat = test_feats @ test_feats.T
             global_R = self.get_global_R(y_true=test_y_true, sim=sim_mat, l=l, u=u)
             indices_pairs = self.get_uncert_pairs(global_R)
-            self.logger.info(f"Epoch {epoch}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
+            self.logger.info(f"Epoch {epoch+1}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
             
             # 查看聚类指标
             test_feats = test_feats.cpu().numpy()
             test_y_true = test_y_true.cpu().numpy()
-
             km = KMeans(n_clusters = args.num_labels).fit(test_feats)
-            test_y_pred = km.labels_
-        
+            test_y_pred = km.labels_       
             # 这里已经用了匈牙利对齐算法
             test_results = clustering_score(test_y_true, test_y_pred)
             plot_cm = True
@@ -173,7 +175,7 @@ class CdacManager:
                 map_ = {i[0]:i[1] for i in ind}
                 test_y_pred = np.array([map_[idx] for idx in test_y_pred])
 
-                cm = confusion_matrix(test_y_true,test_y_pred)               
+                cm = confusion_matrix(test_y_true, test_y_pred)               
             
             self.logger.info("***** Test: Confusion Matrix *****")
             self.logger.info("%s", str(cm))
@@ -193,7 +195,8 @@ class CdacManager:
             else:
                 wait += 1
                 if wait >= args.wait_patient:
-                    break                
+                    break      
+            self.logger.info(f"当前最佳epoch: {best_metrics["Epoch"]}, wait={wait}")          
 
         self.model = best_model
         os.makedirs(args.output_dir, exist_ok=True)
@@ -202,27 +205,29 @@ class CdacManager:
         self.logger.info(f"Best cdac model saved to {save_path}")
 
 
-
     def get_sim_score(self, feats):
-        # feats 是 tensor
-        # sim: [num_samples, num_samples]
+        # 计算相似度
         sim = torch.matmul(feats, feats.T)
-        # 查看sim数据分布情况 - 使用 PyTorch 操作
-        # 1. 只取下三角（去掉对角线）
-        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()        
-        # 2. 把下三角相似度拉成一维
+        sim = torch.clamp(sim, 0.0, 1.0)  # 限制在[0,1]区间
+        
+        # 统计分布情况
+        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
         flat = sim[mask]
-        # 3. 使用 PyTorch 的 histc 进行统计
-        bins = 10
-        hist = torch.histc(flat, bins=bins, min=0, max=1)       
-        # 4. 把计数转换为字符串
+        
+        # 修改统计区间,使分布更细致
+        bins = 20  # 增加区间数
+        hist = torch.histc(flat, bins=bins, min=0, max=1)
         info = ' '.join([f'{int(count)}' for count in hist])
         self.logger.info("sim distrib: %s", info)
+        
         return sim
 
     def get_global_R(self, y_true, sim, l, u):
         # 初始化为-1
         global_R = torch.full_like(sim, -1.0)
+
+        # 将相似度限制在[0,1]区间
+        sim = torch.clamp(sim, 0.0, 1.0)
 
         # 0) label sample and label sample
         mask_label = (y_true != -1)
