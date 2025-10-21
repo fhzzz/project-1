@@ -226,8 +226,8 @@ class CdacManager:
         # 初始化为-1
         global_R = torch.full_like(sim, -1.0)
 
-        # 将相似度限制在[0,1]区间
-        sim = torch.clamp(sim, 0.0, 1.0)
+        # # 将相似度限制在[0,1]区间
+        # sim = torch.clamp(sim, 0.0, 1.0)
 
         # 0) label sample and label sample
         mask_label = (y_true != -1)
