@@ -15,6 +15,10 @@ class PrepareData:
     def __init__(self, args, logger_name="Data Processing"):
 
         set_seed(args.seed)
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:   # 避免重复
+            self.logger.addHandler(logging.StreamHandler())        
 
         self.data_dir = os.path.join(args.data_dir, args.dataset)
         self.logger.info(f"data_dir:{self.data_dir}")
@@ -46,11 +50,11 @@ class PrepareData:
         
         # DataLoader: 对比学习阶段, 必须使用顺序采样器
         train_semi_sampler = SequentialSampler(self.train_semi_samples)
-        self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.batch_size, 
+        self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
                                                 sampler=train_semi_sampler)
         # 测试集同样采样了顺序采样器
         test_sampler = SequentialSampler(self.test_samples)
-        self.test_dataloader = DataLoader(dataset=self.test_samples, batch_size=args.batch_size, 
+        self.test_dataloader = DataLoader(dataset=self.test_samples, batch_size=args.test_batch_size, 
                                           sampler=test_sampler)
         
         # 训练集数据示例

@@ -7,7 +7,8 @@ from utils import *
 
 import torch
 import numpy as np
-from transformers.optimization import AdamW, get_linear_schedule_with_warmup
+from transformers.optimization import get_linear_schedule_with_warmup
+from torch.optim import AdamW
 from sklearn.cluster import KMeans
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.metrics.pairwise import cosine_similarity
@@ -23,7 +24,7 @@ class CdacManager:
         self.logger = logging.getLogger(logger_name)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.model = Bert(model=args.model, head_feat_dim=args.feat_dim).to(self.device)
+        self.model = Bert(model=args.model, feat_dim=args.feat_dim).to(self.device)
 
         # 加载PretrainBert 的 backbone 权重
         pretrain_file = os.path.join(args.output_dir, "best_pretrain_model.pt")
@@ -37,8 +38,6 @@ class CdacManager:
             print("✅ PretrainBert backbone loaded into Bert.")
         else:
             print("⚠️  pretrain weight not found, train from scratch.")        
-
-        data_processor = PrepareData()
 
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
@@ -73,51 +72,37 @@ class CdacManager:
             num_training_steps= steps)
         return optimizer, scheduler
 
-    def eval(self, args, dataloader, get_feats=False):
+    def eval(self, args, dataloader):
 
         self.model.eval()
 
-        total_labels = torch.empty(0, dtype=torch.long).to(self.device)
-        total_preds = torch.empty(0, dtype=torch.long).to(self.device)
-
-        total_feats = torch.empty((0, self.model.config.hidden_size)).to(self.device)
-        total_logits = torch.empty((0, args.num_labels)).to(self.device)
+        total_feats = torch.empty((0,args.feat_dim)).to(self.device)
+        total_labels = torch.empty(0,dtype=torch.long).to(self.device)
 
         for batch in tqdm(dataloader, desc="Evaluating", leave=False):
 
             batch = {k: v.to(self.device) for k, v in batch.items()}
             with torch.set_grad_enabled(False):
-                sent_embed, logits = self.model(
+                feats = self.model(
                     input_ids=batch['input_ids'], 
                     attention_mask=batch['attention_mask'], 
-                    labels=None, 
-                    mode=None,
-                )
+                    labels=None)
 
-                total_feats = torch.cat(total_feats, sent_embed)
-                total_labels = torch.cat(total_labels, batch['label'])
-                total_logits = torch.cat(total_logits, logits)
-        
-        if get_feats:
-            feats = total_feats.cpu().numpy()
-            y_true = total_labels.cpu().numpy()
-            total_probs = F.softmax(total_logits.detach(), dim=1)
-            _, total_preds = total_probs.max(dim=1)
-            y_pred = total_preds.cpu().numpy()            
-            return feats, y_true, y_pred
-        else:
-            total_probs = F.softmax(total_logits.detach(), dim=1)
-            _, total_preds = total_probs.max(dim=1)
+            total_feats = torch.cat((total_feats, feats))
+            total_labels = torch.cat((total_labels, batch['label']))
 
-            y_pred = total_preds.cpu().numpy()
-            y_true = total_labels.cpu().numpy()
-            return y_true, y_pred
+        return total_feats, total_labels
 
     def train(self, args, eps=1e-10):
 
-        best_eval_score = 0
         wait = 0
-        best_model = None    
+        best_model = copy.deepcopy(self.model)
+        best_metrics = {
+            'Epoch': 0,
+            'ACC': 0,
+            'ARI': 0,
+            'NMI': 0
+        }   
 
         for epoch in trange(int(args.num_train_epochs), desc="CDAC"):
             self.model.train()
@@ -136,12 +121,11 @@ class CdacManager:
                     seq_emb = self.model(
                         input_ids=batch['input_ids'], 
                         attention_mask=batch['attention_mask'], 
-                        labels=None, 
-                        mode='simple_forward')
+                        labels=None, )
 
                     # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
-                    sim = self.get_sim_score(feats=seq_emb)  
-                    batch_R = self.get_global_R(y_true=batch["labels"], sim=sim, l=l, u=u)
+                    sim = torch.matmul(seq_emb, seq_emb.transpose(0, -1)) 
+                    batch_R = self.get_global_R(y_true=batch["label"], sim=sim, l=l, u=u)
                     
                     # 计算相似度损失
                     pos_mask = (batch_R == 1)
@@ -165,51 +149,51 @@ class CdacManager:
             sim_loss = tr_sim_loss / nb_tr_steps
 
             # 直接用测试集评估
-            test_feats, test_y_true, test_y_pred = self.eval(args, dataloader=self.test_dataloader, get_feats=True)
-            eval_score = round(accuracy_score(test_y_true, test_y_pred) * 100, 2)
-
-            eval_results = {
-                'Train_sim_loss': round(sim_loss, 6),
-                'Eval_score': eval_score,
-                'Best_score':best_eval_score,
-                'Wait_epoch': wait, 
-            }
-
-            self.logger.info("***** Epoch: %s: Eval results *****", str(epoch))
-            for key in eval_results.keys():
-                self.logger.info("  %s = %s", key, str(eval_results[key]))
+            test_feats, test_y_true = self.eval(args, dataloader=self.test_dataloader)
 
             # 用测试集集查看候选三元组的数量
             sim_mat = self.get_sim_score(feats=test_feats)
+            # sim_mat = test_feats @ test_feats.T
             global_R = self.get_global_R(y_true=test_y_true, sim=sim_mat, l=l, u=u)
             indices_pairs = self.get_uncert_pairs(global_R)
             self.logger.info(f"Epoch {epoch}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
-            # 查看聚类指标
-            km = KMeans(n_clusters = args.num_labels).fit(test_feats)
-            y_pred = km.labels_
-        
-            # 已经用了匈牙利对齐算法
-            test_results = clustering_score(test_y_true, test_y_pred)
-            cm = confusion_matrix(test_y_true, test_y_pred)
             
-            self.logger.info
+            # 查看聚类指标
+            test_feats = test_feats.cpu().numpy()
+            test_y_true = test_y_true.cpu().numpy()
+
+            km = KMeans(n_clusters = args.num_labels).fit(test_feats)
+            test_y_pred = km.labels_
+        
+            # 这里已经用了匈牙利对齐算法
+            test_results = clustering_score(test_y_true, test_y_pred)
+            plot_cm = True
+            if plot_cm:
+                ind, _ = hungray_alignment(test_y_true, test_y_pred)
+                map_ = {i[0]:i[1] for i in ind}
+                test_y_pred = np.array([map_[idx] for idx in test_y_pred])
+
+                cm = confusion_matrix(test_y_true,test_y_pred)               
+            
             self.logger.info("***** Test: Confusion Matrix *****")
             self.logger.info("%s", str(cm))
-            self.logger.info("***** Test results *****")
 
+            self.logger.info("***** Test results *****")
             for key in sorted(test_results.keys()):
                 self.logger.info("  %s = %s", key, str(test_results[key]))
 
-            
-            if eval_score > best_eval_score:
+            if test_results['ACC'] + test_results['ARI'] + test_results['NMI'] > \
+                best_metrics['ACC'] + best_metrics['ARI'] + best_metrics['NMI']:
+                best_metrics['Epoch'] = epoch
+                best_metrics['ACC'] = test_results['ACC']
+                best_metrics['ARI'] = test_results['ARI']
+                best_metrics['NMI'] = test_results['NMI']
                 best_model = copy.deepcopy(self.model)
                 wait = 0
-                best_eval_score = eval_score
             else:
                 wait += 1
                 if wait >= args.wait_patient:
-                    break
-
+                    break                
 
         self.model = best_model
         os.makedirs(args.output_dir, exist_ok=True)
@@ -218,19 +202,23 @@ class CdacManager:
         self.logger.info(f"Best cdac model saved to {save_path}")
 
 
+
     def get_sim_score(self, feats):
-        # feats: [num_samples, feat_dim]
+        # feats 是 tensor
         # sim: [num_samples, num_samples]
-        feats = F.normalize(feats, p=2, dim=1)
-        sim = torch.matmul(feats, feats.t())
+        sim = torch.matmul(feats, feats.T)
+        # 查看sim数据分布情况 - 使用 PyTorch 操作
+        # 1. 只取下三角（去掉对角线）
+        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()        
+        # 2. 把下三角相似度拉成一维
+        flat = sim[mask]
+        # 3. 使用 PyTorch 的 histc 进行统计
+        bins = 10
+        hist = torch.histc(flat, bins=bins, min=0, max=1)       
+        # 4. 把计数转换为字符串
+        info = ' '.join([f'{int(count)}' for count in hist])
+        self.logger.info("sim distrib: %s", info)
         return sim
-
-    def get_label_R(self, labels):
-        # labels: [bsz,] or [num+label_samples]??
-        label_R = labels.unsqueeze(0) == labels.unsqueeze(1)
-        label_R = label_R.float()
-        return label_R
-
 
     def get_global_R(self, y_true, sim, l, u):
         # 初始化为-1
@@ -244,8 +232,8 @@ class CdacManager:
         
         # 1) 其余所有情况: 至少一个样本没有标签
         other_mask = ~both_label_mask
-        global_R[other_mask & (sim >= u)] = torch.tensor(1.0)
-        global_R[other_mask & (sim <= l)] = torch.tensor(0.0)
+        global_R[other_mask & (sim >= u)] = torch.tensor(1.0).to(self.device)
+        global_R[other_mask & (sim <= l)] = torch.tensor(0.0).to(self.device)
         return global_R
     
     def get_uncert_pairs(self, global_R):
@@ -255,7 +243,7 @@ class CdacManager:
         # 只保留下三角（去重+去掉对角线）
         # 这里需要注意，因为调用LLM有相同样本对但由于顺序不一致导致结果不一致的可能。
         # 但如果选择只保留下三角，那直接不会出现这个问题。
-        mask = torch.tril(uncert_mask, diagnonal=-1)
+        mask = torch.tril(uncert_mask, diagonal=-1)
         row, col = torch.where(mask)
 
         # List[(i, j)]

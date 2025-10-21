@@ -36,40 +36,43 @@ class PretrainBert(nn.Module):
 
 class Bert(nn.Module):
 
-    def __init__(self, model, head_feat_dim):
+    def __init__(self, model, feat_dim=128):
         super(Bert, self).__init__()
 
         self.backbone = AutoModelForMaskedLM.from_pretrained(model)
         self.config = AutoConfig.from_pretrained(model)
 
-        self.dropout = nn.Dropout(self.config.hidden_dropout_prob)
+        # 评估分类准确率
+        # self.dense = nn.Linear(config.hidden_size, config.hidden_size) # Pooling-mean
+        # self.activation = nn.Tanh()
+        # self.dropout = nn.Dropout(p=0.1)
+        # self.classifier = nn.Linear(config.hidden_size, num_labels)
 
+        # 对比损失投影头
         self.head = nn.Sequential(
             nn.Linear(self.config.hidden_size, self.config.hidden_size),
             nn.ReLU(inplace=True), 
             nn.Dropout(p=0.1), 
-            nn.Linear(self.config.hidden_size, head_feat_dim)
+            nn.Linear(self.config.hidden_size, feat_dim)
         )
         
     def forward(self,
                 input_ids=None,
                 attention_mask=None,
-                labels=None,
-                mode='feature_ext'):
+                labels=None,):
 
         outputs = self.backbone(input_ids=input_ids,
                                 attention_mask=attention_mask,
                                 labels=labels,
                                 output_hidden_states=True)
 
-        # 统一先取最后一层 hidden
-        last_hidden = outputs.hidden_states[-1]          # [B, L, H]
-        mask = attention_mask.unsqueeze(-1).float()      # [B, L, 1]
-        sent = (last_hidden * mask).sum(1) / (mask.sum(1) + 1e-8)  # mean-pooling
+        # # 统一先取最后一层 hidden, mean pooling
+        # last_hidden = outputs.hidden_states[-1]          # [B, L, H]
+        # mask = attention_mask.unsqueeze(-1).float()      # [B, L, 1]
+        # sent_embed = (last_hidden * mask).sum(1) / (mask.sum(1) + 1e-8)  # mean-pooling
 
-        if mode == 'feature_ext':
-            return F.normalize(sent, p=2, dim=1)         
-
-        elif mode == 'simple_forward':
-            sent = self.dropout(sent)
-            return F.normalize(self.head(sent), dim=1)   
+        # [CLS]token
+        sent_embed = outputs.hidden_states[-1][:, 0]
+        # sent_embed = self.dropout(sent_embed)
+        feats = F.normalize(self.head(sent_embed), dim=1)
+        return feats

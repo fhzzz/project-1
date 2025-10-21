@@ -13,7 +13,7 @@ def init_model():
 
     parser.add_argument("--known_cls_ratio", default=0.75, type=float, help="")
     parser.add_argument("--num_labels", default=150, type=int, help="")
-    parser.add_argument("--head_feat_dim", default=128, type=int, help="")
+    parser.add_argument("--feat_dim", default=128, type=int, help="")
     # tokenizer
     parser.add_argument("--max_length", default=None, type=int, help="")
     
@@ -24,7 +24,7 @@ def init_model():
 
     # 训练超参数相关
     parser.add_argument("--num_pretrain_epochs", default=100, type=int, help="")
-    parser.add_argument("--num_train_epochs", default=5, type=int, help="")
+    parser.add_argument("--num_train_epochs", default=10, type=int, help="")
 
     parser.add_argument("--pretrain_batch_size", default=16, type=int, help="")
     parser.add_argument("--train_batch_size", default=32, type=int, help="")
