@@ -113,10 +113,10 @@ class CdacManager:
 
             # 动态更新阈值
             eta = epoch * 0.009  # 自适应参数
-            # u = max(0.5, 0.95 - eta)  # 防止u过小
-            # l = min(0.9, 0.455 + eta * 0.1)  # 防止l过大  
-            u = max(0.6, 0.8 - eta)          
-            l = min(0.4, 0.2 + eta)
+            u = max(0.5, 0.95 - eta)  # 防止u过小
+            l = min(0.9, 0.455 + eta * 0.1)  # 防止l过大  
+            # u = max(0.51, 0.6 - eta)          
+            # l = min(0.49, 0.4 + eta)
 
             for step, batch in enumerate(tqdm(self.train_semi_dataloader)):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
@@ -129,6 +129,9 @@ class CdacManager:
 
                     # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
                     sim = torch.matmul(seq_emb, seq_emb.transpose(0, -1)) 
+                    # sim = self.get_sim_score(seq_emb)
+                    if step % 100 == 0:
+                        sim = self.get_sim_score(seq_emb)
                     batch_R = self.get_global_R(y_true=batch["label"], sim=sim, l=l, u=u)
                     
                     # 计算相似度损失
@@ -152,14 +155,19 @@ class CdacManager:
 
             sim_loss = tr_sim_loss / nb_tr_steps
 
-            self.logger.info(f"Epoch {epoch+1}: loss={sim_loss}")
+            # 查看三元组数量信息
+            train_feats, train_y_true = self.eval(args, self.train_semi_dataloader)
+            train_feats = train_feats.cpu()
+            train_y_true = train_y_true.cpu()
+            train_sim = self.get_sim_score(train_feats)
+            train_R = self.get_global_R(train_y_true, train_sim, l, u)
+            indices_pairs = self.get_uncert_pairs(train_R)
+
             # 直接用测试集评估
             test_feats, test_y_true = self.eval(args, dataloader=self.test_dataloader)
 
-            # 查看候选三元组的数量
-            sim_mat = self.get_sim_score(feats=test_feats)
-            global_R = self.get_global_R(y_true=test_y_true, sim=sim_mat, l=l, u=u)
-            indices_pairs = self.get_uncert_pairs(global_R)
+            self.logger.info("***** Train info *****")
+            self.logger.info(f"Epoch {epoch+1}: loss={sim_loss}")            
             self.logger.info(f"Epoch {epoch+1}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
             
             # 查看聚类指标
@@ -215,7 +223,7 @@ class CdacManager:
         flat = sim[mask]
         
         # 修改统计区间,使分布更细致
-        bins = 20  # 增加区间数
+        bins = 10  # 增加区间数
         hist = torch.histc(flat, bins=bins, min=0, max=1)
         info = ' '.join([f'{int(count)}' for count in hist])
         self.logger.info("sim distrib: %s", info)

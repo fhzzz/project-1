@@ -8,6 +8,7 @@ from tqdm import tqdm, trange
 from sklearn.metrics import accuracy_score
 
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, SequentialSampler, Dataset
 import copy, logging
 
 class PretrainManager:
@@ -18,9 +19,12 @@ class PretrainManager:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = PretrainBert(model=args.model, num_labels=args.num_labels).to(self.device)
         
+        self.train_labeled_datasets = data_processor.train_labeled_samples
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
+        self.eval_known_datasets = data_processor.eval_known_samples
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.train_mlm_dataloader = data_processor.train_mlm_dataloader
+        # self.train_labeled_dataloader = DataLoader(dataset=self.train)
 
         steps = len(self.train_labeled_dataloader) * args.num_pretrain_epochs
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)

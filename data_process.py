@@ -50,9 +50,13 @@ class PrepareData:
                                                 batch_size=args.eval_batch_size, shuffle=False)
         
         # DataLoader: 对比学习阶段, 必须使用顺序采样器
-        train_semi_sampler = SequentialSampler(self.train_semi_samples)
+        # train_semi_sampler = SequentialSampler(self.train_semi_samples)
+        # self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
+        #                                         sampler=train_semi_sampler)
+
         self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
-                                                sampler=train_semi_sampler)
+                                                shuffle=True)
+                                               
         # 测试集同样采样了顺序采样器
         test_sampler = SequentialSampler(self.test_samples)
         self.test_dataloader = DataLoader(dataset=self.test_samples, batch_size=args.test_batch_size, 
