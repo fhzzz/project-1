@@ -1,2 +1,15 @@
+# 模型和数据文件
 bert_model/
 results/
+models/
+*.pth
+*.pt
+*.bin
+*.h5
+
+# 缓存文件
+__pycache__/
+*.pyc
+
+# Jupyter 相关
+.ipynb_checkpoints/
