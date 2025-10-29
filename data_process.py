@@ -54,6 +54,7 @@ class PrepareData:
         # self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
         #                                         sampler=train_semi_sampler)
 
+        self.logger.info("cdac training, shuffle=True")
         self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
                                                 shuffle=True)
                                                

@@ -38,16 +38,21 @@ class MemoryBank:
         self.relation_matrix = self.relation_matrix.to(device)
 
 
-class NeighborDataset:
-
-    def __init__(self, dataset, indices, num_neighbors=None):
-        super(NeighborDataset, self).__init__()
-
-        self.dataset = dataset
-        self.indices = indices  # Nearest neighbor indices (np.array, [len(dataset), 1])
-        # 这里如果要根据LLM标注结果确定正类样本的话，
-    
-
-
-
+class TripletDataset(Dataset):
+    def __init__(self, triplets):
+        self.triplets = triplets
         
+    def __len__(self):
+        return len(self.triplets)
+        
+    def __getitem__(self, idx):
+        triplet = self.triplets[idx]
+        
+        return {
+            'anchor_input_ids': triplet['anchor']['input_ids'],
+            'anchor_attention_mask': triplet['anchor']['attention_mask'],
+            'positive_input_ids': triplet['positive']['input_ids'],
+            'positive_attention_mask': triplet['positive']['attention_mask'],
+            'negative_input_ids': triplet['negative']['input_ids'],
+            'negative_attention_mask': triplet['negative']['attention_mask']
+        }

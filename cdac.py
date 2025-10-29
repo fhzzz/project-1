@@ -35,9 +35,9 @@ class CdacManager:
                              for k, v in pretrain_ckpt.items()
                              if k.startswith("backbone.")}
             self.model.backbone.load_state_dict(backbone_dict, strict=True)
-            print("✅ PretrainBert backbone loaded into Bert.")
+            self.logger.info("✅ PretrainBert backbone loaded into Bert.")
         else:
-            print("⚠️  pretrain weight not found, train from scratch.")        
+            self.logger.info("⚠️  pretrain weight not found, train from scratch.")        
 
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
@@ -110,6 +110,7 @@ class CdacManager:
             self.model.train()
             tr_sim_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
+            num_pair = 0
 
             # 动态更新阈值
             eta = epoch * 0.009  # 自适应参数
@@ -141,6 +142,8 @@ class CdacManager:
                     neg_entropy = -torch.log(torch.clamp(1 - sim, eps, 1.0)) * neg_mask
 
                     sim_loss = pos_entropy.mean() + neg_entropy.mean() + u - l
+                    indices_pairs = self.get_uncert_pairs(batch_R)
+                    num_pair += len(indices_pairs)
 
                     self.optimizer.zero_grad()
                     sim_loss.backward()
@@ -155,20 +158,12 @@ class CdacManager:
 
             sim_loss = tr_sim_loss / nb_tr_steps
 
-            # 查看三元组数量信息
-            train_feats, train_y_true = self.eval(args, self.train_semi_dataloader)
-            train_feats = train_feats.cpu()
-            train_y_true = train_y_true.cpu()
-            train_sim = self.get_sim_score(train_feats)
-            train_R = self.get_global_R(train_y_true, train_sim, l, u)
-            indices_pairs = self.get_uncert_pairs(train_R)
-
             # 直接用测试集评估
             test_feats, test_y_true = self.eval(args, dataloader=self.test_dataloader)
 
             self.logger.info("***** Train info *****")
-            self.logger.info(f"Epoch {epoch+1}: loss={sim_loss}")            
-            self.logger.info(f"Epoch {epoch+1}: u={u:.3f}, l={l:.3f}, uncertain pairs={len(indices_pairs)}")
+            self.logger.info(f"Epoch {epoch+1}: loss={sim_loss}")   
+            self.logger.info(f"Epoch {epoch+1}: 不确定样本对数量为{num_pair}!")         
             
             # 查看聚类指标
             test_feats = test_feats.cpu().numpy()
@@ -185,12 +180,10 @@ class CdacManager:
 
                 cm = confusion_matrix(test_y_true, test_y_pred)               
             
-            self.logger.info("***** Test: Confusion Matrix *****")
-            self.logger.info("%s", str(cm))
-
             self.logger.info("***** Test results *****")
             for key in sorted(test_results.keys()):
                 self.logger.info("  %s = %s", key, str(test_results[key]))
+            self.logger.info("%s", str(cm))
 
             if test_results['ACC'] + test_results['ARI'] + test_results['NMI'] > \
                 best_metrics['ACC'] + best_metrics['ARI'] + best_metrics['NMI']:
@@ -221,13 +214,10 @@ class CdacManager:
         # 统计分布情况
         mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
         flat = sim[mask]
-        
-        # 修改统计区间,使分布更细致
-        bins = 10  # 增加区间数
+        bins = 10 
         hist = torch.histc(flat, bins=bins, min=0, max=1)
         info = ' '.join([f'{int(count)}' for count in hist])
         self.logger.info("sim distrib: %s", info)
-        
         return sim
 
     def get_global_R(self, y_true, sim, l, u):
