@@ -54,9 +54,9 @@ class PrepareData:
         # self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
         #                                         sampler=train_semi_sampler)
 
-        self.logger.info("cdac training, shuffle=True")
-        self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
-                                                shuffle=True)
+        # self.logger.info("cdac training, shuffle=True")
+        # self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.pretrain_batch_size, 
+        #                                         shuffle=True)
                                                
         # 测试集同样采样了顺序采样器
         test_sampler = SequentialSampler(self.test_samples)
@@ -64,13 +64,13 @@ class PrepareData:
                                           sampler=test_sampler)
         
         # 训练集数据示例
-        batch = next(iter(self.train_labeled_dataloader))
-        first_sample = {}
-        for key, value in batch.items():
-            first_sample[key] = value[0]  # 取每个张量的第一个元素
+        # batch = next(iter(self.train_labeled_dataloader))
+        # first_sample = {}
+        # for key, value in batch.items():
+        #     first_sample[key] = value[0]  # 取每个张量的第一个元素
 
-        self.logger.info("第一个标签样本的完整数据:")
-        self.logger.info(first_sample)
+        # self.logger.info("第一个标签样本的完整数据:")
+        # self.logger.info(first_sample)
 
 
     def get_tokenized(self, data_dir):

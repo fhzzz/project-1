@@ -23,11 +23,12 @@ class CdacManager:
     def __init__(self, args, data_processor, logger_name='Main Training'):
         self.logger = logging.getLogger(logger_name)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.logger.info(f"device: {self.device}")
 
         self.model = Bert(model=args.model, feat_dim=args.feat_dim).to(self.device)
 
         # 加载PretrainBert 的 backbone 权重
-        pretrain_file = os.path.join(args.output_dir, "best_pretrain_model.pt")
+        pretrain_file = os.path.join(args.output_dir, args.dataset, "best_pretrain_model.pt")
         if os.path.exists(pretrain_file):
             pretrain_ckpt = torch.load(pretrain_file, map_location=self.device)
             # 只拿 "backbone.xxx" 开头的键
@@ -41,13 +42,13 @@ class CdacManager:
 
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
-        self.train_semi_dataloader = data_processor.train_semi_dataloader
+        self.train_semi_samples = data_processor.train_semi_samples
+        self.train_semi_dataloader = DataLoader(self.train_semi_samples, args.train_batch_size, shuffle=True, )
         self.test_dataloader = data_processor.test_dataloader
-        self.index_to_text = data_processor.index_to_text
-        steps = len(self.train_labeled_dataloader) * args.num_train_epochs
+
+        # self.index_to_text = data_processor.index_to_text
+        steps = len(self.train_semi_dataloader) * args.num_train_epochs
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
-        
-        self.triplet_loss = 1
         self.centroids = None
 
 
@@ -98,7 +99,7 @@ class CdacManager:
     def train(self, args, eps=1e-10):
 
         wait = 0
-        best_model = copy.deepcopy(self.model)
+        eta = 0
         best_metrics = {
             'Epoch': 0,
             'ACC': 0,
@@ -110,12 +111,12 @@ class CdacManager:
             self.model.train()
             tr_sim_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
-            num_pair = 0
 
-            # 动态更新阈值
-            eta = epoch * 0.009
+            eta += 1.1 * 0.009            
             u = max(0.5, 0.95 - eta)
             l = min(0.9, 0.455 + eta * 0.1)
+            if u < l:
+                break
 
             for step, batch in enumerate(tqdm(self.train_semi_dataloader)):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
@@ -127,14 +128,8 @@ class CdacManager:
                         labels=None, )
 
                     # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
-                    sim = torch.matmul(seq_emb, seq_emb.transpose(0, -1)) 
-                    
-                    if step % 100 == 0:
-                        sim = self.get_sim_score(seq_emb)
-                    batch_R = self.get_global_R(y_true=batch["label"], sim=sim, l=l, u=u)
-                    indices_pairs = self.get_uncert_pairs(batch_R)
-                    num_pair += len(indices_pairs)                    
-                    
+                    sim = torch.matmul(seq_emb, seq_emb.transpose(0, -1))
+                    batch_R = self.get_global_R(y_true=batch['label'], sim=sim, l=l, u=u)                                      
                     # 计算相似度损失
                     pos_mask = (batch_R == 1)
                     neg_mask = (batch_R == 0)
@@ -145,12 +140,11 @@ class CdacManager:
 
                     self.optimizer.zero_grad()
                     sim_loss.backward()
-                    # nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
                     self.scheduler.step()
                    
                     tr_sim_loss += sim_loss.item()
-
                     nb_tr_examples += batch['input_ids'].size(0)
                     nb_tr_steps += 1
 
@@ -158,14 +152,14 @@ class CdacManager:
 
             self.logger.info("***** Train info *****")
             self.logger.info(f"Epoch {epoch+1}: loss={sim_loss:.4f}")   
-            self.logger.info(f"Epoch {epoch+1}: 不确定样本对数量为{num_pair}!")         
+            # self.logger.info(f"Epoch {epoch+1}: 不确定样本对数量为{num_pair}!")         
             
             # 直接用测试集评估
             test_feats, test_y_true = self.eval(args, dataloader=self.test_dataloader)            
             test_feats = test_feats.cpu().numpy()
             test_y_true = test_y_true.cpu().numpy()
-            km = KMeans(n_clusters = args.num_labels).fit(test_feats)
-            test_y_pred = km.labels_       
+            km = KMeans(n_clusters = args.num_labels, random_state=42).fit(test_feats)
+            test_y_pred = km.labels_      
             # 这里已经用了匈牙利对齐算法
             test_results = clustering_score(test_y_true, test_y_pred)
             plot_cm = True
@@ -177,8 +171,10 @@ class CdacManager:
                 cm = confusion_matrix(test_y_true, test_y_pred)               
             
             self.logger.info("***** Test results *****")
-            for key in sorted(test_results.keys()):
-                self.logger.info("  %s = %s", key, str(test_results[key]))
+            result_line = "  " + "  ".join([f"{key} = {test_results[key]}" for key in test_results.keys()])
+            best_result = "  " + "  ".join([f"{key} = {best_metrics[key]}" for key in best_metrics.keys()])
+            self.logger.info(result_line)   
+            self.logger.info(best_result)         
             self.logger.info("%s", str(cm))
 
             if test_results['ACC'] + test_results['ARI'] + test_results['NMI'] > \
@@ -196,32 +192,15 @@ class CdacManager:
             self.logger.info(f"当前最佳 epoch: {best_metrics["Epoch"]}, wait={wait}")          
 
         self.model = best_model
-        os.makedirs(args.output_dir, exist_ok=True)
-        save_path = os.path.join(args.output_dir, "best_cdac_model_1030.pt")
+        os.makedirs(os.path.join(args.output_dir, args.dataset), exist_ok=True)
+        save_path = os.path.join(args.output_dir, args.dataset, "best_cdac_model.pt")
         torch.save(self.model.state_dict(), save_path)
         self.logger.info(f"Best cdac model saved to {save_path}")
 
 
-    def get_sim_score(self, feats):
-        # 计算相似度
-        sim = torch.matmul(feats, feats.T)
-        sim = torch.clamp(sim, 0.0, 1.0)  # 限制在[0,1]区间
-        
-        # 统计分布情况
-        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
-        flat = sim[mask]
-        bins = 10 
-        hist = torch.histc(flat, bins=bins, min=0, max=1)
-        info = ' '.join([f'{int(count)}' for count in hist])
-        self.logger.info("sim distrib: %s", info)
-        return sim
-
     def get_global_R(self, y_true, sim, l, u):
         # 初始化为-1
         global_R = torch.full_like(sim, -1.0)
-
-        # # 将相似度限制在[0,1]区间
-        # sim = torch.clamp(sim, 0.0, 1.0)
 
         # 0) label sample and label sample
         mask_label = (y_true != -1)
@@ -259,7 +238,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
     
-    log_path = os.path.join(args.output_dir, "cdac_train_1030.log")
+    log_path = os.path.join(args.output_dir, args.dataset, "cdac_train_1101.log")
 
     logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",

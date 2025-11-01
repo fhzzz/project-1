@@ -178,8 +178,10 @@ class PretrainManager:
                     break
 
         self.model = best_model
-        os.makedirs(args.output_dir, exist_ok=True)
-        save_path = os.path.join(args.output_dir, "best_pretrain_model.pt")
+        path = os.path.join(args.output_dir, args.dataset)
+        os.makedirs(path, exist_ok=True)
+        
+        save_path = os.path.join(path, "best_pretrain_model.pt")
         torch.save(self.model.state_dict(), save_path)
         self.logger.info(f"Best pre-trained model saved to {save_path}")
 
