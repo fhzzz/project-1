@@ -27,29 +27,37 @@ class CdacManager:
 
         self.model = Bert(model=args.model, feat_dim=args.feat_dim).to(self.device)
 
-        # 加载PretrainBert 的 backbone 权重
-        pretrain_file = os.path.join(args.output_dir, args.dataset, "best_pretrain_model.pt")
-        if os.path.exists(pretrain_file):
-            pretrain_ckpt = torch.load(pretrain_file, map_location=self.device)
-            # 只拿 "backbone.xxx" 开头的键
-            backbone_dict = {k.replace("backbone.", ""): v
-                             for k, v in pretrain_ckpt.items()
-                             if k.startswith("backbone.")}
-            self.model.backbone.load_state_dict(backbone_dict, strict=True)
-            self.logger.info("✅ PretrainBert backbone loaded into Bert.")
-        else:
-            self.logger.info("⚠️  pretrain weight not found, train from scratch.")        
+        # # 加载PretrainBert 的 backbone 权重
+        # pretrain_file = os.path.join(args.output_dir, args.dataset, "best_pretrain_model.pt")
+        # if os.path.exists(pretrain_file):
+        #     pretrain_ckpt = torch.load(pretrain_file, map_location=self.device)
+        #     # 只拿 "backbone.xxx" 开头的键
+        #     backbone_dict = {k.replace("backbone.", ""): v
+        #                      for k, v in pretrain_ckpt.items()
+        #                      if k.startswith("backbone.")}
+        #     self.model.backbone.load_state_dict(backbone_dict, strict=True)
+        #     self.logger.info("✅ PretrainBert backbone loaded into Bert.")
+        # else:
+        #     self.logger.info("⚠️  pretrain weight not found, train from scratch.")        
 
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
-        self.train_semi_samples = data_processor.train_semi_samples
-        self.train_semi_dataloader = DataLoader(self.train_semi_samples, args.train_batch_size, shuffle=True, )
         self.test_dataloader = data_processor.test_dataloader
+        self.train_semi_samples = data_processor.train_semi_samples
 
+        # DataLoader: 随机采样器 v.s. 顺序采样器
+        # train_semi_sampler = RandomSampler(self.train_semi_samples)
+        train_semi_sampler = SequentialSampler(self.train_semi_samples)
+        self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
+                                                sampler=train_semi_sampler)   
+        
         # self.index_to_text = data_processor.index_to_text
         steps = len(self.train_semi_dataloader) * args.num_train_epochs
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
         self.centroids = None
+
+        # 记录超参数信息
+        self.logger.info(f"{args.dataset}, KCL={args.known_cls_ratio}, train_batch_size={args.train_batch_size}")
 
 
     def get_optimizer(self, args, steps):
@@ -66,14 +74,14 @@ class CdacManager:
                 'weight_decay': 0.0
             }
         ]
-        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr_pre)
+        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=num_warmup_steps,
             num_training_steps= steps)
         return optimizer, scheduler
 
-    def eval(self, args, dataloader):
+    def get_features(self, args, dataloader):
 
         self.model.eval()
 
@@ -86,33 +94,49 @@ class CdacManager:
             with torch.set_grad_enabled(False):
                 feats = self.model(
                     input_ids=batch['input_ids'], 
+                    token_type_ids=batch['token_type_ids'], 
                     attention_mask=batch['attention_mask'], 
-                    labels=None)
+                    labels=None, mode=None)
 
             total_feats = torch.cat((total_feats, feats))
             total_labels = torch.cat((total_labels, batch['label']))
 
         return total_feats, total_labels
 
+    def evaluation(self, args, plot_cm=True):
+        """final clustering evaluation on dataset"""
+        # get features
+        feats, labels = self.get_features(args, self.test_dataloader)
+        feats = feats.cpu().numpy()
+        # k-means clustering
+        km = KMeans(n_clusters = args.num_labels, random_state=args.seed).fit(feats)
+        y_pred = km.labels_
+        y_true = labels.cpu().numpy()
 
+        cluster_results = clustering_score(y_true, y_pred)
+
+        if plot_cm:
+            ind, _ = hungray_alignment(y_true, y_pred)
+            map_ = {i[0]:i[1] for i in ind}
+            y_pred = np.array([map_[idx] for idx in y_pred])
+
+            cm = confusion_matrix(y_true,y_pred)
+
+        return cluster_results, cm 
+    
 
     def train(self, args, eps=1e-10):
 
         wait = 0
-        eta = 0
-        best_metrics = {
-            'Epoch': 0,
-            'ACC': 0,
-            'ARI': 0,
-            'NMI': 0
-        }   
+        best_metrics = {'ACC': 0, 'ARI': 0, 'NMI': 0, 'Epoch': 0}   
 
         for epoch in trange(int(args.num_train_epochs), desc="CDAC"):
             self.model.train()
-            tr_sim_loss = 0
+            tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
+            num_pairs = 0
 
-            eta += 1.1 * 0.009            
+            eta = epoch * 0.005           
             u = max(0.5, 0.95 - eta)
             l = min(0.9, 0.455 + eta * 0.1)
             if u < l:
@@ -123,53 +147,51 @@ class CdacManager:
 
                 with torch.set_grad_enabled(True):
                     seq_emb = self.model(
-                        input_ids=batch['input_ids'], 
+                        input_ids=batch['input_ids'],
+                        token_type_ids=batch['token_type_ids'],  
                         attention_mask=batch['attention_mask'], 
-                        labels=None, )
+                        labels=None)
 
                     # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
-                    sim = torch.matmul(seq_emb, seq_emb.transpose(0, -1))
-                    batch_R = self.get_global_R(y_true=batch['label'], sim=sim, l=l, u=u)                                      
+                    sim_mat = torch.matmul(seq_emb, seq_emb.transpose(0, -1))
+                    sim_mat = (sim_mat + 1) / 2
+                    if step % 100 == 0:
+                        self.get_sim_distrib(sim_mat)                    
+                    batch_R = self.get_batch_R(y_true=batch['label'], sim=sim_mat, l=l, u=u)                                      
+                    uncert_pairs = self.get_uncert_pairs(batch_R)
+                    num_pairs += len(uncert_pairs)
+                    
                     # 计算相似度损失
                     pos_mask = (batch_R == 1)
                     neg_mask = (batch_R == 0)
-                    pos_entropy = -torch.log(torch.clamp(sim, eps, 1.0)) * pos_mask
-                    neg_entropy = -torch.log(torch.clamp(1 - sim, eps, 1.0)) * neg_mask
+                    pos_entropy = -torch.log(torch.clamp(sim_mat, eps, 1.0)) * pos_mask
+                    neg_entropy = -torch.log(torch.clamp(1 - sim_mat, eps, 1.0)) * neg_mask
 
-                    sim_loss = pos_entropy.mean() + neg_entropy.mean() + u - l
-
+                    loss = pos_entropy.mean() + neg_entropy.mean() + u - l
+                    # loss = self.model(input_ids=batch['input_ids'], 
+                    #                 token_type_ids=batch['token_type_ids'], 
+                    #                 attention_mask=batch['attention_mask'], 
+                    #                 label=batch['label'], u_threshold=u, l_threshold=l, 
+                    #                 mode='train', semi=True)
+                    
                     self.optimizer.zero_grad()
-                    sim_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
                     self.scheduler.step()
-                   
-                    tr_sim_loss += sim_loss.item()
+
+                    tr_loss += loss.item()
                     nb_tr_examples += batch['input_ids'].size(0)
                     nb_tr_steps += 1
 
-            sim_loss = tr_sim_loss / nb_tr_steps
+                sim_loss = tr_loss / nb_tr_steps
 
             self.logger.info("***** Train info *****")
-            self.logger.info(f"Epoch {epoch+1}: loss={sim_loss:.4f}")   
-            # self.logger.info(f"Epoch {epoch+1}: 不确定样本对数量为{num_pair}!")         
+            self.logger.info(f"Epoch {epoch}: loss={sim_loss:.4f}, num_uncert_pairs={num_pairs}, (u, l) = ({round(u, 4)},{round(l, 4)})")         
             
             # 直接用测试集评估
-            test_feats, test_y_true = self.eval(args, dataloader=self.test_dataloader)            
-            test_feats = test_feats.cpu().numpy()
-            test_y_true = test_y_true.cpu().numpy()
-            km = KMeans(n_clusters = args.num_labels, random_state=42).fit(test_feats)
-            test_y_pred = km.labels_      
-            # 这里已经用了匈牙利对齐算法
-            test_results = clustering_score(test_y_true, test_y_pred)
-            plot_cm = True
-            if plot_cm:
-                ind, _ = hungray_alignment(test_y_true, test_y_pred)
-                map_ = {i[0]:i[1] for i in ind}
-                test_y_pred = np.array([map_[idx] for idx in test_y_pred])
-
-                cm = confusion_matrix(test_y_true, test_y_pred)               
-            
+            test_results, cm = self.evaluation(args, self.test_dataloader)
+                
             self.logger.info("***** Test results *****")
             result_line = "  " + "  ".join([f"{key} = {test_results[key]}" for key in test_results.keys()])
             best_result = "  " + "  ".join([f"{key} = {best_metrics[key]}" for key in best_metrics.keys()])
@@ -193,12 +215,12 @@ class CdacManager:
 
         self.model = best_model
         os.makedirs(os.path.join(args.output_dir, args.dataset), exist_ok=True)
-        save_path = os.path.join(args.output_dir, args.dataset, "best_cdac_model.pt")
+        save_path = os.path.join(args.output_dir, args.dataset, "best_model.pt")
         torch.save(self.model.state_dict(), save_path)
         self.logger.info(f"Best cdac model saved to {save_path}")
 
 
-    def get_global_R(self, y_true, sim, l, u):
+    def get_batch_R(self, y_true, sim, l, u):
         # 初始化为-1
         global_R = torch.full_like(sim, -1.0)
 
@@ -229,6 +251,15 @@ class CdacManager:
 
         return indices_pairs
 
+    def get_sim_distrib(self, sim):
+        """统计分布情况"""
+        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
+        flat = sim[mask]
+        bins = 10
+        hist = torch.histc(flat, bins=bins, min=-1, max=1)
+        info = ' '.join([f'{int(count)}' for count in hist])
+        self.logger.info("sim distrib: %s", info)
+
 
 if __name__ == "__main__":
 
@@ -238,7 +269,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
     
-    log_path = os.path.join(args.output_dir, args.dataset, "cdac_train_1101.log")
+    log_path = os.path.join(args.output_dir, args.dataset, "cdac_1109.log")
 
     logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",

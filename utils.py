@@ -28,21 +28,15 @@ def hungray_alignment(y_true, y_pred):
     ind = np.transpose(np.asarray(linear_sum_assignment(w.max()- w)))
     return ind, w
 
-# 聚类评价指标    
-def clustering_score(y_true, y_pred):
-    """
-    Return:
-        dict: {'ACC', 'ARI', 'NMI'}
-    """
-
-    # clustering accuracy score
-    ind, w = hungray_alignment(y_true=y_true, y_pred=y_pred)
+def clustering_accuracy_score(y_true, y_pred):
+    ind, w = hungray_alignment(y_true, y_pred)
     acc = sum([w[i, j] for i, j in ind]) / y_pred.size
-    return {
-        'ACC': round(acc*100, 2), 
-        'ARI': round(adjusted_rand_score(y_true, y_pred)*100, 2), 
-        'NMI': round(normalized_mutual_info_score(y_true, y_pred)*100, 2)
-    }
+    return acc
+
+def clustering_score(y_true, y_pred):
+    return {'ACC': round(clustering_accuracy_score(y_true, y_pred)*100, 2),
+            'ARI': round(adjusted_rand_score(y_true, y_pred)*100, 2),
+            'NMI': round(normalized_mutual_info_score(y_true, y_pred)*100, 2)}
 
 
 def save_model(args, model, epoch, mode=None):

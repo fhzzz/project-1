@@ -11,7 +11,7 @@ def init_model():
     parser.add_argument("--dataset", default="clinc", type=str, help="")
     parser.add_argument("--output_dir", default='results', type=str, help="")
 
-    parser.add_argument("--known_cls_ratio", default=0.75, type=float, help="")
+    parser.add_argument("--known_cls_ratio", default=0.25, type=float, help="")
     parser.add_argument("--num_labels", default=150, type=int, help="")
     parser.add_argument("--feat_dim", default=128, type=int, help="")
     # tokenizer
@@ -24,16 +24,16 @@ def init_model():
 
     # 训练超参数相关
     parser.add_argument("--num_pretrain_epochs", default=100, type=int, help="")
-    parser.add_argument("--num_train_epochs", default=6, type=int, help="")
+    parser.add_argument("--num_train_epochs", default=50, type=int, help="")
 
     parser.add_argument("--pretrain_batch_size", default=16, type=int, help="")
-    parser.add_argument("--train_batch_size", default=64, type=int, help="")
+    parser.add_argument("--train_batch_size", default=32, type=int, help="")
     parser.add_argument("--eval_batch_size", default=64, type=int, help="")
     parser.add_argument("--test_batch_size", default=64, type=int, help="")
     
-
-    parser.add_argument("--lr_pre", default=5e-5, type=float, help="")
-    parser.add_argument("--wait_patient", default=6, type=int, help="Early stop patience")
+    parser.add_argument("--lr_pre", default=5.0e-5, type=float, help="")
+    parser.add_argument("--lr", default=1.0e-5, type=float, help="")
+    parser.add_argument("--wait_patient", default=10, type=int, help="Early stop patience")
     parser.add_argument("--warmup_proportion", default=0.1, type=float, help="")
 
 

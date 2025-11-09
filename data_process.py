@@ -3,7 +3,7 @@ from config import *
 
 from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 from datasets import load_dataset, ClassLabel, concatenate_datasets
-from torch.utils.data import DataLoader, SequentialSampler, Dataset
+from torch.utils.data import DataLoader, SequentialSampler, RandomSampler, Dataset
 import os, logging, copy
 
 import numpy as np

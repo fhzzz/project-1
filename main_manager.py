@@ -29,7 +29,7 @@ class Main2Manager:
         self.model = Bert(model=args.model, feat_dim=args.feat_dim).to(self.device)
 
         # 加载PretrainBert 的 backbone 权重
-        pretrain_file = os.path.join(args.output_dir, "best_pretrain_model.pt")
+        pretrain_file = os.path.join(args.output_dir, args.dataset, "best_pretrain_model.pt")
         if os.path.exists(pretrain_file):
             pretrain_ckpt = torch.load(pretrain_file, map_location=self.device)
             # 只拿 "backbone.xxx" 开头的键
@@ -41,16 +41,18 @@ class Main2Manager:
         else:
             print("⚠️  pretrain weight not found, train from scratch.")
 
-        # data_processor = PrepareData()
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
-        self.train_semi_dataloader = data_processor.train_semi_dataloader
-        self.test_dataloader = data_processor.test_dataloader
+        self.test_dataloader = data_processor.test_dataloader        
+        self.train_semi_samples = data_processor.train_semi_samples
+        # DataLoader: 顺序采样器
+        train_semi_sampler = SequentialSampler(self.train_semi_samples)
+        self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
+                                                sampler=train_semi_sampler) 
 
         self.index_to_text = data_processor.index_to_text
-        self.train_semi_samples = data_processor.train_semi_samples
 
-        steps = len(self.train_labeled_dataloader) * args.num_train_epochs
+        steps = len(self.train_semi_dataloader) * args.num_train_epochs
         self.n_samples = len(self.train_semi_samples)
 
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
@@ -73,7 +75,7 @@ class Main2Manager:
                 'weight_decay': 0.0
             }
         ]
-        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr_pre)
+        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.lr)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=num_warmup_steps,
@@ -109,39 +111,26 @@ class Main2Manager:
         test_feats, labels = self.get_features(args, self.test_dataloader)
         test_feats = test_feats.cpu().numpy()
         # k-means clustering
-        km = KMeans(n_clusters = args.num_labels).fit(test_feats)
+        km = KMeans(n_clusters = args.num_labels, random_state=args.seed).fit(test_feats)
         y_pred = km.labels_
         y_true = labels.cpu().numpy()
 
         cluster_results = clustering_score(y_true, y_pred)
-        self.logger.info("***** Test cluster results *****")
-        for key in sorted(cluster_results.keys()):
-            self.logger.info("  %s = %s", key, str(cluster_results[key]))
 
-        # confusion matrix
         if plot_cm:
             ind, _ = hungray_alignment(y_true, y_pred)
             map_ = {i[0]:i[1] for i in ind}
             y_pred = np.array([map_[idx] for idx in y_pred])
 
             cm = confusion_matrix(y_true,y_pred)
-           
-        self.logger.info("***** Test: Confusion Matrix *****")
-        self.logger.info("%s", str(cm))
-        return cluster_results      
+
+        return cluster_results, cm      
 
 
     def train(self, args, eps=1e-10):
 
-        best_eval_score = 0
         wait = 0
-        best_model = None
-        best_metrics = {
-            'Epoch': 0,
-            'ACC': 0,
-            'ARI': 0,
-            'NMI': 0
-        } 
+        best_metrics = {'ACC': 0, 'ARI': 0, 'NMI': 0, 'Epoch': 0}
 
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             self.model.train()
@@ -150,19 +139,20 @@ class Main2Manager:
             all_indices_pairs = []
 
             # 动态更新阈值
-            eta = epoch * 0.009  # 自适应参数
-            u = max(0.5, 0.95 - eta)  # 防止u过小
-            l = min(0.9, 0.455 + eta * 0.1)  # 防止l过大              
+            eta = epoch * 0.009
+            u = max(0.5, 0.95 - eta)
+            l = min(0.9, 0.455 + eta * 0.1)             
 
             # stage-1: 按照batch计算相似度损失，同时收集难样本对
             for step, batch in enumerate(tqdm(self.train_semi_dataloader, desc="Phase 1", leave=False)):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
                 bsz = batch['input_ids'].size(0)
+
                 with torch.set_grad_enabled(True):
-                    feats = self.model(
-                        input_ids=batch['input_ids'], 
+                    feats = self.model(input_ids=batch['input_ids'], 
+                        token_type_ids=batch['token_type_ids'], 
                         attention_mask=batch['attention_mask'], 
-                        labels=None, )
+                        labels=None)
                     
                     # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
                     sim = torch.matmul(feats, feats.transpose(0, -1)) 
@@ -192,16 +182,16 @@ class Main2Manager:
                         ]
                         all_indices_pairs.extend(global_indices_pairs)
 
-                    # 反向传播相似度损失
-                    self.optimizer.zero_grad()
-                    sim_loss.backward()
+                    # # 反向传播相似度损失
+                    # self.optimizer.zero_grad()
+                    # sim_loss.backward()
                     # nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    self.optimizer.step()
-                    self.scheduler.step()
+                    # self.optimizer.step()
+                    # self.scheduler.step()
                    
-                    tr_sim_loss += sim_loss.item()
-                    nb_tr_examples += bsz
-                    nb_tr_steps += 1
+                    # tr_sim_loss += sim_loss.item()
+                    # nb_tr_examples += bsz
+                    # nb_tr_steps += 1
 
             # 第二阶段：使用收集到的难样本对构建三元组进行训练                   
             if all_indices_pairs:
@@ -247,8 +237,8 @@ class Main2Manager:
                         
                         tr_triplet_loss += triplet_loss.item()
                     
-                    self.logger.info(f"Epoch {epoch} - Sim Loss: {tr_sim_loss/nb_tr_steps:.4f}, Triplet Loss: {tr_triplet_loss/len(triplet_loader):.4f}")
-            
+                    # self.logger.info(f"Epoch {epoch} - Sim Loss: {tr_sim_loss/nb_tr_steps:.4f}, Triplet Loss: {tr_triplet_loss/len(triplet_loader):.4f}")
+                    self.logger.info(f"Epoch {epoch} -Triplet Loss: {tr_triplet_loss/len(triplet_loader):.4f}")
             # 评估
             cluster_results = self.evaluation(args, plot_cm=True)
             
@@ -264,11 +254,17 @@ class Main2Manager:
                 wait += 1
                 if wait >= args.wait_patient:
                     break      
-            self.logger.info(f"当前最佳epoch: {best_metrics["Epoch"]}, wait={wait}")          
+
+            self.logger.info("***** Test results *****")
+            result_line = "  " + "  ".join([f"{key} = {cluster_results[key]}" for key in cluster_results.keys()])
+            best_result = "  " + "  ".join([f"{key} = {best_metrics[key]}" for key in best_metrics.keys()])
+            self.logger.info(result_line)   
+            self.logger.info(best_result)
+            self.logger.info(f"当前最佳 epoch: {best_metrics["Epoch"]}, wait={wait}")         
 
         self.model = best_model
-        os.makedirs(args.output_dir, exist_ok=True)
-        save_path = os.path.join(args.output_dir, "best_model.pt")
+        os.makedirs(os.path.join(args.output_dir, args.dataset), exist_ok=True)
+        save_path = os.path.join(args.output_dir, args.dataset, "best_model.pt")
         torch.save(self.model.state_dict(), save_path)
         self.logger.info(f"Best cdac model saved to {save_path}")
 
@@ -418,7 +414,7 @@ class Main2Manager:
         mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
         flat = sim[mask]
         
-        bins = 20
+        bins = 10
         hist = torch.histc(flat, bins=bins, min=-1, max=1)
         info = ' '.join([f'{int(count)}' for count in hist])
         self.logger.info("sim distrib: %s", info)
@@ -506,7 +502,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
     
-    log_path = os.path.join(args.output_dir, "train_model_1026.log")
+    log_path = os.path.join(args.output_dir, args.dataset, "train_model_1101.log")
 
     logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
