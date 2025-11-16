@@ -1,3 +1,13 @@
+"""
+- 这个基本和CDAC原论文第一阶段是一样的，模型直接返回损失，不过增加了早停机制以及保存评估结果最好的模型
+- 和 cdac.py 最大的区别在于模型的设置不同
+- 随机采样器，加载预训练模型，但是首轮效果跟没加载一样，不知道为什么。strict=True/False结果差别不大
+- 应该是没加载成功预训练权重。
+- 另外，评估指标的计算方法有一点小改正
+
+- 模型保存在 results/clinc/best_cdac_model.pt, cdac_train_1109.log
+"""
+
 from data_process import *
 from config import *
 from model import *

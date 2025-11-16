@@ -108,10 +108,10 @@ class Main2Manager:
     def evaluation(self, args, plot_cm=True):
         """final clustering evaluation on test set"""
         # get features
-        test_feats, labels = self.get_features(args, self.test_dataloader)
-        test_feats = test_feats.cpu().numpy()
+        feats, labels = self.get_features(args, self.test_dataloader)
+        feats = feats.cpu().numpy()
         # k-means clustering
-        km = KMeans(n_clusters = args.num_labels, random_state=args.seed).fit(test_feats)
+        km = KMeans(n_clusters = args.num_labels, random_state=args.seed).fit(feats)
         y_pred = km.labels_
         y_true = labels.cpu().numpy()
 
@@ -124,7 +124,7 @@ class Main2Manager:
 
             cm = confusion_matrix(y_true,y_pred)
 
-        return cluster_results, cm      
+        return cluster_results, cm       
 
 
     def train(self, args, eps=1e-10):

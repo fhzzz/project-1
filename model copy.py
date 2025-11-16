@@ -33,70 +33,12 @@ class PretrainBert(nn.Module):
             return logits
         else:                       
             return cls_emb, logits
-
+        
 
 class Bert(nn.Module):
-    """
-    - 该类的目的在于使用分类指标评估模型效果，以推断为什么加载预训练权重后模型聚类评估指标变差
-    - 使用 *param: mode* 提供特征提取和分类两种模式
-    """
-    def __init__(self, model, feat_dim=128, num_labels=77):
-        super(Bert, self).__init__()
-
-        self.backbone = AutoModelForMaskedLM.from_pretrained(model)
-        self.config = AutoConfig.from_pretrained(model)
-
-        # 评估分类准确率
-        self.classifier = nn.Sequential(
-            nn.Linear(self.config.hidden_size, self.config.hidden_size), 
-            nn.Tanh(), 
-            nn.Dropout(p=0.1), 
-            nn.Linear(self.config.hidden_size, num_labels)
-        )
-
-        # 对比损失投影头
-        self.head = nn.Sequential(
-            nn.Linear(self.config.hidden_size, self.config.hidden_size),
-            nn.ReLU(inplace=True), 
-            nn.Dropout(p=0.1), 
-            nn.Linear(self.config.hidden_size, feat_dim)
-        )
-        
-    def forward(self, input_ids=None, token_type_ids=None, attention_mask=None, 
-                labels=None, mode=None):        
-
-        outputs = self.backbone(input_ids=input_ids,
-                                attention_mask=attention_mask,
-                                token_type_ids=token_type_ids, 
-                                labels=None, 
-                                output_hidden_states=True)
-
-        # # mean pooling: 统一先取最后一层 hidden
-        # last_hidden = outputs.hidden_states[-1]          # [B, L, H]
-        # mask = attention_mask.unsqueeze(-1).float()      # [B, L, 1]
-        # feats = (last_hidden * mask).sum(1) / (mask.sum(1) + 1e-8)  # mean-pooling
-        
-        # [CLS]token
-        feats = outputs.hidden_states[-1][:, 0]
-        
-        if mode == "feat_ext":
-            feats = F.normalize(self.head(feats), dim=1)
-            # feats = self.head(feats)  # 不做归一化处理
-            return feats           
-        else:
-            logits = self.classifier(feats)
-            return logits
-    
-
-class BertTest(nn.Module):
-    """
-    - 该类是为了测试我自己写的筛选样本对的方式是否错误，从实验结果来看，应该没有错误。
-    - 该类包含两种计算相似度损失的方式，一种内置在model里，另一种模型作为特征提取器。
-    - 实验发现，模型作为特征提取器效果好于作为分类器
-    """
 
     def __init__(self, model, feat_dim=128):
-        super(BertTest, self).__init__()
+        super(Bert, self).__init__()
 
         self.backbone = AutoModelForMaskedLM.from_pretrained(model)
         self.config = AutoConfig.from_pretrained(model)
@@ -131,9 +73,8 @@ class BertTest(nn.Module):
         # sent_embed = (last_hidden * mask).sum(1) / (mask.sum(1) + 1e-8)  # mean-pooling
 
         # [CLS]token
-        feats = outputs.hidden_states[-1][:, 0]
-        feats = F.normalize(self.head(feats), dim=1)
-        # feats = self.head(feats)
+        sent_embed = outputs.hidden_states[-1][:, 0]
+        feats = F.normalize(self.head(sent_embed), dim=1)
         if mode == "train":
             eps = 1e-10
             logits_norm = F.normalize(feats, p=2, dim=1)

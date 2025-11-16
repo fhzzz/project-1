@@ -17,14 +17,14 @@ class PretrainManager:
         
         self.logger = logging.getLogger(logger_name)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = PretrainBert(model=args.model, num_labels=args.num_labels).to(self.device)
         
         self.train_labeled_datasets = data_processor.train_labeled_samples
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_datasets = data_processor.eval_known_samples
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.train_mlm_dataloader = data_processor.train_mlm_dataloader
-        # self.train_labeled_dataloader = DataLoader(dataset=self.train)
+        self.num_labels = data_processor.num_labels
+        self.model = PretrainBert(model=args.model, num_labels=self.num_labels).to(self.device)
 
         steps = len(self.train_labeled_dataloader) * args.num_pretrain_epochs
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
@@ -60,7 +60,7 @@ class PretrainManager:
         total_preds = torch.empty(0, dtype=torch.long).to(self.device)
 
         total_feats = torch.empty((0, self.model.config.hidden_size)).to(self.device)
-        total_logits = torch.empty((0, args.num_labels)).to(self.device)
+        total_logits = torch.empty((0, self.num_labels)).to(self.device)
 
         for batch in tqdm(self.eval_known_dataloader, desc="Iteration", leave=False):
 
@@ -194,8 +194,8 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
     
-    log_path = os.path.join(args.output_dir, "pretrain.log")
-
+    # os.makedirs(os.path.join(args.output_dir, args.dataset), exist_ok=True)
+    log_path = os.path.join(args.output_dir, args.dataset, "pretrain_banking.log")
 
     logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
