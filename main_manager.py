@@ -26,21 +26,6 @@ class Main2Manager:
         self.logger = logging.getLogger(logger_name)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-        self.model = Bert(model=args.model, feat_dim=args.feat_dim).to(self.device)
-
-        # 加载PretrainBert 的 backbone 权重
-        pretrain_file = os.path.join(args.output_dir, args.dataset, "best_pretrain_model.pt")
-        if os.path.exists(pretrain_file):
-            pretrain_ckpt = torch.load(pretrain_file, map_location=self.device)
-            # 只拿 "backbone.xxx" 开头的键
-            backbone_dict = {k.replace("backbone.", ""): v
-                             for k, v in pretrain_ckpt.items()
-                             if k.startswith("backbone.")}
-            self.model.backbone.load_state_dict(backbone_dict, strict=True)
-            print("✅ PretrainBert backbone loaded into Bert.")
-        else:
-            print("⚠️  pretrain weight not found, train from scratch.")
-
         self.train_labeled_dataloader = data_processor.train_labeled_dataloader
         self.eval_known_dataloader = data_processor.eval_known_dataloader
         self.test_dataloader = data_processor.test_dataloader        
@@ -49,8 +34,12 @@ class Main2Manager:
         train_semi_sampler = SequentialSampler(self.train_semi_samples)
         self.train_semi_dataloader = DataLoader(dataset=self.train_semi_samples, batch_size=args.train_batch_size, 
                                                 sampler=train_semi_sampler) 
-
+        self.num_labels = args.num_labels
         self.index_to_text = data_processor.index_to_text
+
+        self.model = Bert(model=args.model, feat_dim=args.feat_dim, num_labels=self.num_labels).to(self.device)
+        pretrain_file = os.path.join(args.output_dir, args.dataset, "best_pretrain_model.pt")
+        self.load_pretrained_model(model_path=pretrain_file)
 
         steps = len(self.train_semi_dataloader) * args.num_train_epochs
         self.n_samples = len(self.train_semi_samples)
@@ -58,8 +47,19 @@ class Main2Manager:
         self.optimizer, self.scheduler = self.get_optimizer(args, steps)
         self.tri_loss = nn.TripletMarginLoss(margin=1.0, p=2)
         self.centroids = None
-        self.num_labels = args.num_labels
-
+        
+    def load_pretrained_model(self, model_path):
+        """加载 PretrainBert 的 backbone 权重"""
+        if os.path.exists(model_path):
+            pretrain_ckpt = torch.load(model_path, map_location=self.device)
+            # 只拿 "backbone.xxx" 开头的键
+            backbone_dict = {k.replace("backbone.", ""): v
+                             for k, v in pretrain_ckpt.items()
+                             if k.startswith("backbone.")}
+            self.model.backbone.load_state_dict(backbone_dict, strict=True)
+            print("✅ PretrainBert backbone loaded into Bert.")
+        else:
+            print("⚠️  pretrain weight not found, train from scratch.")
 
     def get_optimizer(self, args, steps):
         num_warmup_steps = int(args.warmup_proportion * steps)
@@ -82,7 +82,6 @@ class Main2Manager:
             num_training_steps= steps)
         return optimizer, scheduler
 
-
     def get_features(self, args, dataloader):
 
         self.model.eval()
@@ -103,7 +102,6 @@ class Main2Manager:
             total_labels = torch.cat((total_labels, batch['label']))
 
         return total_feats, total_labels
-
 
     def evaluation(self, args, plot_cm=True):
         """final clustering evaluation on test set"""
@@ -130,49 +128,42 @@ class Main2Manager:
     def train(self, args, eps=1e-10):
 
         wait = 0
+        u = 0.95
+        l = 0.455
+        eta = 0          
         best_metrics = {'ACC': 0, 'ARI': 0, 'NMI': 0, 'Epoch': 0}
 
         for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
             self.model.train()
-            tr_sim_loss = 0
+            tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
+            num_pairs = 0
             all_indices_pairs = []
 
-            # 动态更新阈值
-            eta = epoch * 0.009
-            u = max(0.5, 0.95 - eta)
-            l = min(0.9, 0.455 + eta * 0.1)             
-
             # stage-1: 按照batch计算相似度损失，同时收集难样本对
-            for step, batch in enumerate(tqdm(self.train_semi_dataloader, desc="Phase 1", leave=False)):
+            for step, batch in enumerate(tqdm(self.train_semi_dataloader, desc="Phase 1")):
                 batch = {k: v.to(self.device) for k, v in batch.items()}
-                bsz = batch['input_ids'].size(0)
+                bsz = batch["label"].shape[0]
 
                 with torch.set_grad_enabled(True):
-                    feats = self.model(input_ids=batch['input_ids'], 
-                        token_type_ids=batch['token_type_ids'], 
+                    seq_emb = self.model(
+                        input_ids=batch['input_ids'],
+                        token_type_ids=batch['token_type_ids'],  
                         attention_mask=batch['attention_mask'], 
                         labels=None)
-                    
-                    # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
-                    sim = torch.matmul(feats, feats.transpose(0, -1)) 
-                    if step % 100 == 0:
-                        sim_distrib = self.get_sim_distrib(sim)
 
+                    # sim: [bsz, bsz], seq_emb: [bsz, feat_dim]
+                    sim_mat = torch.matmul(seq_emb, seq_emb.transpose(0, -1))
+                    # sim_mat = (sim_mat + 1) / 2  # 大NO特NO
+                    # sim_mat = sim_mat / args.temperature
                     # 遗留问题：区间阈值到底应该怎么弄？感觉按照收紧不是很合理
                     # 如果使用表征学习的思想，那应该采用两阶段训练的思想
-                    batch_R = self.get_global_R(y_true=batch["label"], sim=sim, l=l, u=u)
-                    
-                    # 计算相似度损失
-                    pos_mask = (batch_R == 1)
-                    neg_mask = (batch_R == 0)
-                    pos_entropy = -torch.log(torch.clamp(sim, eps, 1.0)) * pos_mask
-                    neg_entropy = -torch.log(torch.clamp(1 - sim, eps, 1.0)) * neg_mask
+                    if step == 0:
+                        self.logger.info("***** Epoch: %s: Similarities Distrib*****", str(epoch))
+                    if step % 100 == 0:
+                        self.get_sim_distrib(sim_mat)                    
+                    batch_R = self.get_batch_R(y_true=batch['label'], sim=sim_mat, l=l, u=u)                                      
 
-                    # 这里为什么要加 u-1 这一项？
-                    sim_loss = pos_entropy.mean() + neg_entropy.mean() + u - l
-                    # 损失函数是越多越好吗？要如何判断呢？我该用什么损失呢？
-                    
                     indices_pairs = self.get_uncert_pairs(batch_R)
                     if indices_pairs:
                         # 将batch内索引转换为全局索引
@@ -180,19 +171,27 @@ class Main2Manager:
                             (i + step * bsz, j + step * bsz) 
                             for i, j in indices_pairs
                         ]
-                        all_indices_pairs.extend(global_indices_pairs)
+                        all_indices_pairs.extend(global_indices_pairs)                    
+                #     # 计算相似度损失
+                #     pos_mask = (batch_R == 1)
+                #     neg_mask = (batch_R == 0)
+                #     pos_entropy = -torch.log(torch.clamp(sim_mat, eps, 1.0)) * pos_mask
+                #     neg_entropy = -torch.log(torch.clamp(1 - sim_mat, eps, 1.0)) * neg_mask
 
-                    # # 反向传播相似度损失
-                    # self.optimizer.zero_grad()
-                    # sim_loss.backward()
-                    # nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    # self.optimizer.step()
-                    # self.scheduler.step()
-                   
-                    # tr_sim_loss += sim_loss.item()
-                    # nb_tr_examples += bsz
-                    # nb_tr_steps += 1
+                #     loss = pos_entropy.mean() + neg_entropy.mean() + u - l
+                    
+                #     self.optimizer.zero_grad()
+                #     loss.backward()
+                #     nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                #     self.optimizer.step()
+                #     self.scheduler.step()
 
+                #     tr_loss += loss.item()
+                #     nb_tr_examples += batch['input_ids'].size(0)
+                #     nb_tr_steps += 1
+
+                # sim_loss = tr_loss / nb_tr_steps            
+          
             # 第二阶段：使用收集到的难样本对构建三元组进行训练                   
             if all_indices_pairs:
                 self.logger.info(f"Epoch {epoch}: collected {len(all_indices_pairs)} uncertain pairs")
@@ -240,39 +239,48 @@ class Main2Manager:
                     # self.logger.info(f"Epoch {epoch} - Sim Loss: {tr_sim_loss/nb_tr_steps:.4f}, Triplet Loss: {tr_triplet_loss/len(triplet_loader):.4f}")
                     self.logger.info(f"Epoch {epoch} -Triplet Loss: {tr_triplet_loss/len(triplet_loader):.4f}")
             # 评估
-            cluster_results = self.evaluation(args, plot_cm=True)
+            self.logger.info("***** Epoch: %s: Train Results and Test Results*****", str(epoch))
+            self.logger.info(f"Epoch {epoch}: loss={sim_loss:.4f}, num_uncert_pairs={num_pairs}, (u, l) = ({round(u, 4)},{round(l, 4)})")         
             
-            if cluster_results['ACC'] + cluster_results['ARI'] + cluster_results['NMI'] > \
+            # 直接用测试集评估
+            test_results, cm = self.evaluation(args, self.test_dataloader)
+            result_line = "  " + "  ".join([f"{key} = {test_results[key]}" for key in test_results.keys()])
+            best_result = "  " + "  ".join([f"{key} = {best_metrics[key]}" for key in best_metrics.keys()])
+            self.logger.info(result_line)   
+            self.logger.info(best_result)         
+            self.logger.info("%s", str(cm))
+
+            eta += 1.1 * 0.005
+            u = 0.95 - eta
+            l = 0.455 + eta*0.1
+            if u < l:
+                break            
+
+            if test_results['ACC'] + test_results['ARI'] + test_results['NMI'] > \
                 best_metrics['ACC'] + best_metrics['ARI'] + best_metrics['NMI']:
                 best_metrics['Epoch'] = epoch
-                best_metrics['ACC'] = cluster_results['ACC']
-                best_metrics['ARI'] = cluster_results['ARI']
-                best_metrics['NMI'] = cluster_results['NMI']
+                best_metrics['ACC'] = test_results['ACC']
+                best_metrics['ARI'] = test_results['ARI']
+                best_metrics['NMI'] = test_results['NMI']
                 best_model = copy.deepcopy(self.model)
                 wait = 0
             else:
                 wait += 1
                 if wait >= args.wait_patient:
                     break      
-
-            self.logger.info("***** Test results *****")
-            result_line = "  " + "  ".join([f"{key} = {cluster_results[key]}" for key in cluster_results.keys()])
-            best_result = "  " + "  ".join([f"{key} = {best_metrics[key]}" for key in best_metrics.keys()])
-            self.logger.info(result_line)   
-            self.logger.info(best_result)
-            self.logger.info(f"当前最佳 epoch: {best_metrics["Epoch"]}, wait={wait}")         
+            self.logger.info(f"当前最佳 epoch: {best_metrics["Epoch"]}, wait={wait}")          
 
         self.model = best_model
         os.makedirs(os.path.join(args.output_dir, args.dataset), exist_ok=True)
         save_path = os.path.join(args.output_dir, args.dataset, "best_model.pt")
         torch.save(self.model.state_dict(), save_path)
-        self.logger.info(f"Best cdac model saved to {save_path}")
+        self.logger.info(f"Best model saved to {save_path}")
 
 
     def get_pesudo_relations_model(self, args, indices_pairs):
         """
         参数：
-            indices_pairs: 已经筛选好的样本对的索引，详见get_uncet_pairs方法
+            indices_pairs: 已经筛选好的样本对的索引, 详见get_uncet_pairs方法
         return:
             想返回一个保存当前样本对索引信息，对应的由模型得到的伪标签关系，字典或者列表形式都可
         备注：
@@ -282,7 +290,7 @@ class Main2Manager:
         feats, y_true = self.get_features(args, self.train_semi_dataloader)
         feats = feats.cpu().numpy()
         y_true = y_true.cpu().numpy()
-        km = KMeans(n_clusters=args.num_labels).fit(feats)
+        km = KMeans(n_clusters=args.num_labels, random_state=args.seed).fit(feats)
         cluster_centroids, y_pred = km.cluster_centers_, km.labels_
         # 匈牙利算法进行对齐
         cluster_centroids, y_pred = self.alignment(self.centroids, cluster_centroids, y_pred)
@@ -301,9 +309,6 @@ class Main2Manager:
             else:
                 pair_relations[(i, j)] = 0
 
-        total_pairs = len(indices_pairs)
-        positive_ratio = count_positive / total_pairs if total_pairs > 0 else 0
-        # self.logger.info(f"总样本对: {total_pairs}, 正例对: {count_positive}, 比例: {positive_ratio:.2f}")
         return pair_relations
 
 
@@ -311,8 +316,9 @@ class Main2Manager:
         """构建三元组训练数据集"""
         triplets = []
         pos_count = sum(1 for rel in pair_relations.values() if rel == 1)  # 统计正例对数量
-        neg_count = sum(1 for rel in pair_relations.values() if rel == 0)  # 统计负例对数量        
-        self.logger.info(f"正例对数量: {pos_count}, 负例对数量: {neg_count}")
+        neg_count = sum(1 for rel in pair_relations.values() if rel == 0)  # 统计负例对数量  
+        positive_ratio = pos_count / (pos_count + neg_count)      
+        self.logger.info(f"pos_count={pos_count}, neg_count={neg_count}, positive_ratio={positive_ratio}")
 
         # 遍历样本对和它们的关系
         for (anchor_idx, other_idx), relation in pair_relations.items():
@@ -407,25 +413,7 @@ class Main2Manager:
         return y_pred_map, cluster_map, cluster_map_opp
 
 
-    def get_sim_distrib(self, sim):
-        # sim = torch.clamp(sim, 0.0, 1.0)  # 限制在[0,1]区间
-
-        # 统计分布情况
-        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
-        flat = sim[mask]
-        
-        bins = 10
-        hist = torch.histc(flat, bins=bins, min=-1, max=1)
-        info = ' '.join([f'{int(count)}' for count in hist])
-        self.logger.info("sim distrib: %s", info)
-
-    def get_label_R(self, labels):
-        # labels: [bsz,] or [num+label_samples]??
-        label_R = labels.unsqueeze(0) == labels.unsqueeze(1)
-        label_R = label_R.float()
-        return label_R
-
-    def get_global_R(self, y_true, sim, l, u):
+    def get_batch_R(self, y_true, sim, l, u):
         # 初始化为-1
         global_R = torch.full_like(sim, -1.0)
 
@@ -437,8 +425,8 @@ class Main2Manager:
         
         # 1) 其余所有情况: 至少一个样本没有标签
         other_mask = ~both_label_mask
-        global_R[other_mask & (sim >= u)] = torch.tensor(1.0)
-        global_R[other_mask & (sim <= l)] = torch.tensor(0.0)
+        global_R[other_mask & (sim >= u)] = torch.tensor(1.0).to(self.device)
+        global_R[other_mask & (sim <= l)] = torch.tensor(0.0).to(self.device)
         return global_R
     
     def get_uncert_pairs(self, global_R):
@@ -455,6 +443,16 @@ class Main2Manager:
         indices_pairs = torch.stack([row, col], dim=1).tolist()
 
         return indices_pairs
+
+    def get_sim_distrib(self, sim):
+        """统计分布情况"""
+        mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
+        flat = sim[mask]
+        bins = 20
+        hist = torch.histc(flat, bins=bins, min=-1, max=1)
+        info = ' '.join([f'{int(count)}' for count in hist])
+        self.logger.info("sim distrib: %s", info)
+
 
     def get_text_pairs(self, indices_pairs):
         """
@@ -502,7 +500,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
     
-    log_path = os.path.join(args.output_dir, args.dataset, "train_model_1101.log")
+    log_path = os.path.join(args.output_dir, args.dataset, "main_manager_1117.log")
 
     logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",

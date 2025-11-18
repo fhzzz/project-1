@@ -12,7 +12,7 @@ def init_model():
     parser.add_argument("--output_dir", default='results', type=str, help="")
 
     parser.add_argument("--known_cls_ratio", default=0.25, type=float, help="")
-    parser.add_argument("--num_labels", default=77, type=int, help="")
+    parser.add_argument("--num_labels", default=150, type=int, help="")
     parser.add_argument("--feat_dim", default=128, type=int, help="")
     # tokenizer
     parser.add_argument("--max_length", default=None, type=int, help="")

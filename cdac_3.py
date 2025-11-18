@@ -1,7 +1,11 @@
 """
-- 目的在于探究、解决评估指标下降的问题
-- 修改评估方式
-- 阈值设置为按照数据分布进行
+- 日期
+    - 目的在于探究、解决评估指标下降的问题 --应该就是收敛速度太快了
+    - 修改评估方式 --不打算修改了，就按聚类指标评估就完事了
+    - 阈值设置为按照数据分布进行 --还是先按照之前的进行
+- 1117
+    - 增加模型评估结果保存方法
+    - 增加三元组损失
 
 """
 
@@ -134,35 +138,55 @@ class CdacManager:
 
         return cluster_results, cm 
     
-    def eval(self, args, dataloader):
-        """和evaluation的区别在于使用分类指标还是聚类评估"""
-        self.model.eval()
+    # def eval(self, args, dataloader):
+    #     """和evaluation的区别在于使用分类指标还是聚类评估"""
+    #     self.model.eval()
 
-        total_logits = torch.empty((0,self.num_labels)).to(self.device)
-        total_labels = torch.empty(0,dtype=torch.long).to(self.device)
+    #     total_logits = torch.empty((0,self.num_labels)).to(self.device)
+    #     total_labels = torch.empty(0,dtype=torch.long).to(self.device)
+
+    #     for batch in tqdm(dataloader, desc="Evaluating", leave=False):
+
+    #         batch = {k: v.to(self.device) for k, v in batch.items()}
+    #         with torch.set_grad_enabled(False):
+    #             logits = self.model(
+    #                 input_ids=batch['input_ids'], 
+    #                 token_type_ids=batch['token_type_ids'], 
+    #                 attention_mask=batch['attention_mask'], 
+    #                 labels=None, mode=None)
+
+    #         total_logits = torch.cat((total_logits, logits))
+    #         total_labels = torch.cat((total_labels, batch['label']))
+
+    #     total_labels = total_labels.cpu().numpy()
+    #     total_logits = total_logits.cpu().numpy()
+    #     total_preds = np.argmax(total_logits, 1)
+    #     # total_probs = F.softmax(total_logits.detach(), dim=1)
+    #     # _, total_preds = total_probs.max(dim=1)
+    #     assert total_logits.shape[1] == self.num_labels
+
+    #     return total_preds, total_labels 
+    
+    def eval(self, args, dataloader):
+        self.model.eval()
+        total_preds = []
+        total_labels = []
 
         for batch in tqdm(dataloader, desc="Evaluating", leave=False):
-
             batch = {k: v.to(self.device) for k, v in batch.items()}
-            with torch.set_grad_enabled(False):
+            with torch.no_grad():
                 logits = self.model(
                     input_ids=batch['input_ids'], 
                     token_type_ids=batch['token_type_ids'], 
                     attention_mask=batch['attention_mask'], 
-                    labels=None, mode=None)
-
-            total_logits = torch.cat((total_logits, logits))
-            total_labels = torch.cat((total_labels, batch['label']))
-
-        total_labels = total_labels.cpu().numpy()
-        total_logits = total_logits.cpu().numpy()
-        total_preds = np.argmax(total_logits, 1)
-        # total_probs = F.softmax(total_logits.detach(), dim=1)
-        # _, total_preds = total_probs.max(dim=1)
-        assert total_logits.shape[1] == self.num_labels
-
-        return total_preds, total_labels        
+                    mode="cls")  # 明确使用分类模式
+                
+                preds = torch.argmax(logits, dim=1)
+                total_preds.extend(preds.cpu().numpy())
+                total_labels.extend(batch['label'].cpu().numpy())
         
+        return np.array(total_preds), np.array(total_labels)           
+            
 
     def train(self, args, eps=1e-10):
 
@@ -305,7 +329,7 @@ class CdacManager:
         """统计分布情况"""
         mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
         flat = sim[mask]
-        bins = 10
+        bins = 20
         hist = torch.histc(flat, bins=bins, min=-1, max=1)
         info = ' '.join([f'{int(count)}' for count in hist])
         self.logger.info("sim distrib: %s", info)

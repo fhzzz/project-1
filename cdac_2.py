@@ -130,13 +130,8 @@ class CdacManager:
             cm = confusion_matrix(y_true,y_pred)
 
         return cluster_results, cm 
-    
-    # def eval(self, args):
-    #     """和evaluation的区别在于使用分类指标还是聚类评估"""
-        
-        
 
-
+        
     def train(self, args, eps=1e-10):
 
         wait = 0
@@ -182,7 +177,7 @@ class CdacManager:
                     pos_entropy = -torch.log(torch.clamp(sim_mat, eps, 1.0)) * pos_mask
                     neg_entropy = -torch.log(torch.clamp(1 - sim_mat, eps, 1.0)) * neg_mask
 
-                    loss = pos_entropy.mean() + neg_entropy.mean()
+                    loss = pos_entropy.mean() + neg_entropy.mean() + u - l
                     # loss = self.model(input_ids=batch['input_ids'], 
                     #                 token_type_ids=batch['token_type_ids'], 
                     #                 attention_mask=batch['attention_mask'], 
@@ -212,7 +207,7 @@ class CdacManager:
             self.logger.info(best_result)         
             self.logger.info("%s", str(cm))
 
-            eta += 1.1 * 0.009
+            eta += 1.1 * 0.005
             u = 0.95 - eta
             l = 0.455 + eta*0.1
             if u < l:
@@ -274,8 +269,8 @@ class CdacManager:
         """统计分布情况"""
         mask = torch.tril(torch.ones_like(sim), diagonal=-1).bool()
         flat = sim[mask]
-        bins = 20
-        hist = torch.histc(flat, bins=bins, min=-1, max=1)
+        bins = 10
+        hist = torch.histc(flat, bins=bins, min=0, max=1)
         info = ' '.join([f'{int(count)}' for count in hist])
         self.logger.info("sim distrib: %s", info)
 
@@ -288,7 +283,7 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_dir):
         raise RuntimeError(f"Failed to create output directory: {args.output_dir}")
     
-    log_path = os.path.join(args.output_dir, args.dataset, "cdac_1111.log")
+    log_path = os.path.join(args.output_dir, args.dataset, "cdac_2_1116.log")
 
     logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",

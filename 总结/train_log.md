@@ -64,3 +64,22 @@ ACC = 47.01  ARI = 35.22  NMI = 67.67  Epoch = 1
 - 跑了mtp-clnn，但是结果很差，其实有点停滞了，不知道要怎么办了
 
 ## 1112周三
+
+## 1116周日
+### cdac_2.py
+- clinc/eta=0.009/lr=1e-5
+    - ACC = 81.64  ARI = 73.34  NMI = 91.78  Epoch = 4
+- clinc/eta=0.005/bsz=32/lr=1e-5
+    - ACC = 81.6  ARI = 73.74  NMI = 91.95  Epoch = 4
+- clinc/eta=0.005/bsz=32/lr=5e-6
+    - ACC = 81.24  ARI = 73.31  NMI = 91.91  Epoch = 0
+
+- clinc/eta=0.001/bsz=32/lr=1e-5
+    - ACC = 81.91  ARI = 73.4  NMI = 91.91  Epoch = 1
+
+- clinc/eta=0.01/bsz=32/lr=1e-5
+    - ACC = 79.02  ARI = 70.48  NMI = 90.95  Epoch = 0
+    - ACC = 81.42  ARI = 72.69  NMI = 91.57  Epoch = 1
+
+ACC = 68.18 | ARI = 57.33 | NMI = 86.84
+
